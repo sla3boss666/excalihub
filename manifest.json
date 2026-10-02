@@ -1,19 +1,42 @@
 {
   "manifest_version": 3,
-  "name": "Excalihub",
-  "version": "1.1.0",
-  "description": "Store and manage Excalidraw files locally in your browser",
-  "permissions": ["storage", "unlimitedStorage"],
-  "host_permissions": ["https://api.anthropic.com/*"],
+  "name": "Excalihub (personal)",
+  "version": "1.2.0",
+  "description": "Pages, frame slideshows, LaTeX formulas, auto-save and OneDrive sync for Excalidraw",
+  "permissions": [
+    "storage",
+    "unlimitedStorage",
+    "identity"
+  ],
+  "host_permissions": [
+    "https://login.microsoftonline.com/*",
+    "https://api.onedrive.com/*",
+    "https://*.1drv.com/*",
+    "https://*.microsoftpersonalcontent.com/*"
+  ],
+  "background": {
+    "service_worker": "dist/background.js",
+    "type": "module"
+  },
   "content_scripts": [
     {
-      "matches": ["https://excalidraw.com/*"],
-      "js": ["dist/content.js"],
-      "css": ["src/content.css"]
+      "matches": [
+        "https://excalidraw.com/*"
+      ],
+      "js": [
+        "dist/content.js"
+      ],
+      "css": [
+        "src/content.css"
+      ]
     },
     {
-      "matches": ["https://excalidraw.com/*"],
-      "js": ["dist/bridge.js"],
+      "matches": [
+        "https://excalidraw.com/*"
+      ],
+      "js": [
+        "dist/bridge.js"
+      ],
       "world": "MAIN"
     }
   ],
@@ -23,8 +46,17 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["icons/icon48.png"],
-      "matches": ["https://excalidraw.com/*"]
+      "resources": [
+        "dist/latex.js"
+      ],
+      "matches": [
+        "https://excalidraw.com/*"
+      ]
     }
-  ]
+  ],
+  "commands": {
+    "toggle-panel": {
+      "description": "Open / close the Excalihub panel"
+    }
+  }
 }

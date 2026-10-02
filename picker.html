@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Excalihub — OneDrive folder</title>
+    <style>
+      :root {
+        --bg: #ffffff;
+        --bg-alt: #f6f6f9;
+        --text: #1b1b1f;
+        --muted: #5c5c5c;
+        --border: #e8e8e8;
+        --primary: #6965db;
+        --primary-text: #ffffff;
+        --danger: #c92a2a;
+        --ok: #2b8a3e;
+        color-scheme: light dark;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #1e1e24;
+          --bg-alt: #26262d;
+          --text: #e3e3e8;
+          --muted: #b8b8b8;
+          --border: #3d3d3d;
+          --primary: #a8a5ff;
+          --primary-text: #1b1b1f;
+          --danger: #ffa8a5;
+          --ok: #8ce99a;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 14px/1.5 system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      }
+      main {
+        max-width: 520px;
+        margin: 0 auto;
+        padding: 24px 16px;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 1.2rem;
+      }
+      p {
+        margin: 0 0 12px;
+        color: var(--muted);
+      }
+      button {
+        font: inherit;
+        font-weight: 600;
+        padding: 8px 14px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: var(--bg-alt);
+        color: var(--text);
+        cursor: pointer;
+      }
+      button.primary {
+        background: var(--primary);
+        border-color: var(--primary);
+        color: var(--primary-text);
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+      #open {
+        width: 100%;
+        padding: 12px;
+        font-size: 1rem;
+      }
+      #status {
+        min-height: 1.5em;
+        margin: 12px 0;
+        color: var(--muted);
+      }
+      #status.error {
+        color: var(--danger);
+      }
+      #status.ok {
+        color: var(--ok);
+        font-weight: 600;
+      }
+      details {
+        margin-top: 8px;
+        border-top: 1px solid var(--border);
+        padding-top: 12px;
+      }
+      summary {
+        cursor: pointer;
+        color: var(--primary);
+        font-weight: 600;
+      }
+      #crumbs {
+        margin: 12px 0 8px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        align-items: center;
+      }
+      #crumbs button {
+        padding: 2px 8px;
+        border: none;
+        background: none;
+        color: var(--primary);
+      }
+      #folders {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        max-height: 300px;
+        overflow-y: auto;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+      }
+      #folders li + li {
+        border-top: 1px solid var(--border);
+      }
+      #folders button {
+        width: 100%;
+        text-align: left;
+        border: none;
+        border-radius: 0;
+        background: none;
+        font-weight: 500;
+      }
+      #folders button:hover {
+        background: var(--bg-alt);
+      }
+      #folders .empty {
+        padding: 10px 14px;
+        color: var(--muted);
+      }
+      .actions {
+        display: flex;
+        gap: 8px;
+        margin-top: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>OneDrive sync folder</h1>
+      <p>
+        Choose the OneDrive folder where Excalihub saves your pages.
+        On your other PCs, choose the same folder to get your pages there.
+      </p>
+      <button id="open" class="primary">Open my OneDrive</button>
+      <p id="status" role="status"></p>
+      <details id="fallback">
+        <summary>OneDrive picker not opening? Browse my folders here</summary>
+        <nav id="crumbs"></nav>
+        <ul id="folders"></ul>
+        <div class="actions">
+          <button id="choose" class="primary" disabled>Choose this folder</button>
+          <button id="new" disabled>New folder…</button>
+        </div>
+      </details>
+    </main>
+    <script type="module" src="dist/picker.js"></script>
+  </body>
+</html>

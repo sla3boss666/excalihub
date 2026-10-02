@@ -2,55 +2,59 @@
   <img src="icons/icon128.png" width="80" alt="Excalihub logo" />
 </p>
 
-<h1 align="center">Excalihub</h1>
+<h1 align="center">Excalihub (personal)</h1>
 
 <p align="center">
-  A Chrome extension that supercharges <a href="https://excalidraw.com">Excalidraw</a> — save &amp; organize drawings, presentation mode, and AI diagram generation, all without leaving the canvas.
+  A personal Chrome extension for <a href="https://excalidraw.com">Excalidraw</a>: multiple pages, PowerPoint-style
+  slideshows from frames, LaTeX formulas, and auto-save with OneDrive sync across PCs.
 </p>
 
-<p align="center">
-  <a href="https://chromewebstore.google.com/detail/excalihub/lihpbdgcmndoecbiceiknanhgclbkmab"><img src="https://img.shields.io/badge/Chrome%20Web%20Store-Install-4285F4?logo=googlechrome&logoColor=white" alt="Chrome Web Store" /></a>
-  <a href="https://github.com/AykutSarac/excalihub/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
-  <a href="https://excalidraw.com"><img src="https://img.shields.io/badge/works%20with-Excalidraw-6965db" alt="Works with Excalidraw" /></a>
-</p>
-
-<br />
-
-<img width="1280" height="800" alt="Excalihub screenshot" src="https://github.com/user-attachments/assets/ec404a79-3df0-48ab-83a7-1d48f7ccbe87" />
-
----
+Based on [Excalihub](https://github.com/AykutSarac/excalihub) by Aykut Saraç (MIT). The original AI generation,
+sharing and file library features were removed.
 
 ## Features
 
-- **Save & Organize** — Save scenes, rename files, organize into folders, import/export `.excalidraw` files
-- **Presentation Mode** — Turn frames into slides and present directly from Excalidraw with keyboard navigation, fullscreen, theme toggle, and slide export
-- **AI Generation** — Describe a diagram in plain text and get a full Excalidraw scene with shapes, arrows, and labels
-- **Extend Canvas** — AI reads your existing drawing and adds to it contextually
-- **Share** — Generate shareable Excalidraw links from the file menu
-- **Bulk Export** — Download your entire library as a `.zip`
-- **Dark Mode** — Automatically matches Excalidraw's theme
-- **BYOK** — Uses the Anthropic API with your own key, stored locally
+- **Pages** — several drawings in the same excalidraw.com tab (create, rename, delete, switch).
+- **Slideshow** — every frame is a slide, shown alone and full screen (no frame outline, bands in the page
+  background color). Slides from **all pages**, ordered by drag and drop, grouped in collapsible, renamable
+  **sections**. Transitions: Fade, Push (up), Reveal. Keyboard and mouse navigation like PowerPoint.
+- **LaTeX formulas** — write `$…$` or `$$…$$` in a text; it is rendered with MathJax (bundled, offline).
+  Double-click a formula to edit its source.
+- **Auto-save and sync** — each page is written as a `.excalidraw` file (latest version only) to a OneDrive
+  folder chosen in OneDrive on the web, and synced both ways with your other PCs. Optional local copy on the PC.
+- **Panel** — side button or **Ctrl+X** (when nothing is selected).
 
 ## Installation
 
-Install from the [Chrome Web Store](https://chromewebstore.google.com/detail/excalihub/lihpbdgcmndoecbiceiknanhgclbkmab), or build manually:
+No build needed: `dist/` is committed.
+
+1. Clone this repository.
+2. Open `chrome://extensions`, enable **Developer mode**, click **Load unpacked** and select the folder.
+3. Open excalidraw.com and press **Ctrl+X** (or click the side button).
+
+To change the code:
 
 ```bash
-git clone https://github.com/AykutSarac/excalihub.git
-cd excalihub
 npm install
-npm run build
+npm run build   # rebuilds dist/
 ```
 
-Then open `chrome://extensions`, enable **Developer mode**, click **Load unpacked**, and select the project folder.
+Then reload the extension in `chrome://extensions` and reload the excalidraw.com tab.
 
-## Development
+## OneDrive sync (personal Microsoft account)
 
-```bash
-npm run watch    # rebuild on file changes
-npm run zip      # create a release zip
-```
+Microsoft requires an app registration (once):
+
+1. [portal.azure.com](https://portal.azure.com) › **Microsoft Entra ID** › **App registrations** › **New registration**.
+2. Supported account types: **Personal Microsoft accounts only**.
+3. Redirect URI: platform **Single-page application (SPA)**, value shown in the extension
+   (Pages tab › Sync with OneDrive, step 1). Each PC has its own URI: add one per PC.
+4. Copy the **Application (client) ID** into the extension, sign in, then choose the folder.
+
+## Privacy
+
+See [PRIVACY.md](PRIVACY.md).
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE.md)
