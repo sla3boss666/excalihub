@@ -7,6 +7,7 @@ export interface PresentationFrame {
   width: number;
   height: number;
   pageId?: string; // page d'origine (diaporama sur toutes les pages)
+  steps?: number; // apparition progressive : nombre de clics pour tout afficher
 }
 
 // Section de slides (comme dans PowerPoint), rangée sur chaque frame
@@ -50,9 +51,23 @@ export function getFramesFromScene(): SceneFrame[] {
   return framesFromElements(readSceneElements());
 }
 
+// Apparition progressive : étapes distinctes des éléments de chaque frame
+// (customData.excalihubStep, posé depuis l'onglet Slides ; voir bridge.ts)
+function stepsByFrame(all: any[]): Map<string, number> {
+  const steps = new Map<string, Set<number>>();
+  for (const el of all) {
+    const step = el.customData?.excalihubStep;
+    if (el.isDeleted || !el.frameId || typeof step !== "number" || step < 1) continue;
+    if (!steps.has(el.frameId)) steps.set(el.frameId, new Set());
+    steps.get(el.frameId)!.add(step);
+  }
+  return new Map([...steps].map(([frameId, set]) => [frameId, set.size]));
+}
+
 // Frames d'une scène (page affichée ou page enregistrée), dans l'ordre des slides
 export function framesFromElements(all: any[]): SceneFrame[] {
   const elements = all.filter((el: any) => el.type === "frame" && !el.isDeleted);
+  const steps = stepsByFrame(all);
   // Ordre choisi dans le panneau, enregistré sur chaque frame (customData)
   const savedOrder = new Map<string, number>(
     elements
@@ -68,6 +83,7 @@ export function framesFromElements(all: any[]): SceneFrame[] {
       y: el.y,
       width: el.width,
       height: el.height,
+      steps: steps.get(el.id) ?? 0,
       order: typeof el.customData?.excalihubSlide === "number" ? el.customData.excalihubSlide : null,
       section: section?.id ? { id: String(section.id), name: String(section.name ?? "") } : null,
     };
@@ -102,20 +118,21 @@ export function getSceneVersion(): number {
   return readSceneElements().reduce((sum: number, el: any) => sum + (el.version ?? 0), 0);
 }
 
-// Cadrage « plein écran » : le frame remplit l'écran sans marge, comme une slide
+// Cadrage « plein écran » : le frame remplit l'écran sans marge, comme une slide.
+// Calé en haut à gauche (bandes éventuelles à droite ou en bas) : d'une slide
+// à l'autre, le titre reste au même endroit même si les frames n'ont pas les
+// mêmes proportions.
 export function fitFrame(
   frame: PresentationFrame,
   vw = window.innerWidth,
   vh = window.innerHeight,
 ): FrameView {
   const zoom = Math.min(vw / frame.width, vh / frame.height);
-  const width = frame.width * zoom;
-  const height = frame.height * zoom;
   return {
     zoom,
-    scrollX: vw / (2 * zoom) - (frame.x + frame.width / 2),
-    scrollY: vh / (2 * zoom) - (frame.y + frame.height / 2),
-    rect: { left: (vw - width) / 2, top: (vh - height) / 2, width, height },
+    scrollX: -frame.x,
+    scrollY: -frame.y,
+    rect: { left: 0, top: 0, width: frame.width * zoom, height: frame.height * zoom },
   };
 }
 

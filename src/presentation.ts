@@ -3,15 +3,19 @@
 import { callBridge, waitForRender } from "./bridgeClient";
 import { canvasFilter, captureRect, displayedColor, themeColorFilter } from "./capture";
 import { fitFrame, getFramesFromScene, PresentationFrame, ScreenRect, SLIDE_FRAME_RENDERING } from "./frames";
+import { isCollabSession } from "./pages";
 
-export type TransitionType = "none" | "fade" | "push" | "reveal";
+export type TransitionType = "none" | "fade" | "push" | "reveal" | "morph" | "pan";
 
-// Transitions PowerPoint utilisées au quotidien
+// Transitions PowerPoint utilisées au quotidien ; Morph et Pan & zoom sont
+// joués sur le canevas (slides d'une même page, sinon fondu)
 export const TRANSITIONS: { type: TransitionType; label: string }[] = [
   { type: "none", label: "None" },
   { type: "fade", label: "Fade" },
   { type: "push", label: "Push (up)" },
   { type: "reveal", label: "Reveal" },
+  { type: "morph", label: "Morph" },
+  { type: "pan", label: "Pan & zoom" },
 ];
 
 export interface TransitionOptions {
@@ -23,6 +27,8 @@ export const DEFAULT_TRANSITION: TransitionOptions = { type: "fade", duration: 6
 
 const EASING = "cubic-bezier(0.65, 0, 0.35, 1)";
 const IDLE_DELAY = 2500; // ms avant de masquer barre d'outils et curseur
+const STEP_FADE_MS = 300; // apparition d'une étape : fondu plus court qu'une transition
+const CANVAS_DURATION_FACTOR = 1.5; // Morph, Pan & zoom : un mouvement se lit plus lentement qu'un fondu
 const BACKGROUND_VAR = "--excalihub-pres-bg"; // couleur des bandes et du fond des transitions
 
 interface AppState {
@@ -43,9 +49,14 @@ export interface PageNavigation {
 
 interface PresentationState {
   pages: PageNavigation | null;
+  pageId: string | null; // page affichée (diaporama sur plusieurs pages)
+  pageSwitch: Promise<void>; // ouverture de page en cours (résolue sinon)
   frames: PresentationFrame[];
   currentIndex: number;
   currentRect: ScreenRect;
+  useSteps: boolean; // apparition progressive (pas en session collaborative)
+  revealed: number; // étapes déjà apparues sur la slide affichée
+  totalSteps: number;
   transition: TransitionOptions;
   originalAppState: AppState;
   overlay: HTMLElement; // barre d'outils + capture des clics
@@ -186,12 +197,17 @@ function setScreen(mode: PresentationState["screenMode"]): void {
 }
 
 // ── Navigation ────────────────────────────────────────────────────────
+// Comme PowerPoint : un clic fait d'abord apparaître l'étape suivante de la
+// slide, puis passe à la slide suivante ; en arrière, la slide précédente
+// revient telle qu'on l'a quittée (tout affiché)
 function next(): void {
   if (!state) return;
   if (state.screenMode === "end") {
     exitPresentationMode();
   } else if (state.screenMode !== "none") {
     setScreen("none");
+  } else if (state.revealed < state.totalSteps) {
+    changeStep(1);
   } else if (state.currentIndex >= state.frames.length - 1) {
     finishTransition();
     setScreen("end");
@@ -203,7 +219,8 @@ function next(): void {
 function previous(): void {
   if (!state) return;
   if (state.screenMode !== "none") setScreen("none");
-  else navigateToSlide(state.currentIndex - 1);
+  else if (state.revealed > 0) changeStep(-1);
+  else navigateToSlide(state.currentIndex - 1, { revealed: Infinity });
 }
 
 function finishTransition(): void {
@@ -214,25 +231,55 @@ function finishTransition(): void {
   state.stage.classList.remove("active");
 }
 
-async function navigateToSlide(index: number, animate = true): Promise<void> {
+interface NavigateOptions {
+  animate?: boolean;
+  revealed?: number; // étapes visibles à l'arrivée (Infinity : toutes)
+}
+
+async function navigateToSlide(index: number, { animate = true, revealed = 0 }: NavigateOptions = {}): Promise<void> {
   if (!state || index < 0 || index >= state.frames.length) return;
 
   finishTransition();
   const token = ++state.navToken;
   const forward = index >= state.currentIndex;
+  const fromSlide = state.frames[state.currentIndex];
   const fromRect = state.currentRect;
   const view = fitFrame(state.frames[index]);
+  const slide = state.frames[index];
 
   state.currentIndex = index;
   state.currentRect = view.rect;
+  // Étapes connues par la liste des slides, confirmées par le bridge au cadrage
+  state.totalSteps = state.useSteps ? (slide.steps ?? 0) : 0;
+  state.revealed = Math.min(revealed, state.totalSteps);
   updateToolbar();
 
-  const slide = state.frames[index];
+  const presentation = state;
   const pages = state.pages;
+  // Page encore en cours d'ouverture : on attend qu'elle soit affichée avant
+  // de toucher au canevas (sinon on agirait sur la page quittée)
+  await presentation.pageSwitch;
+  if (state !== presentation || token !== presentation.navToken) return;
+
   const jump = async () => {
-    // Slide d'une autre page : on ouvre d'abord cette page (son fond peut différer)
-    if (pages && slide.pageId && (await pages.ensurePage(slide.pageId))) await applyBackground();
-    await callBridge("updateScene", {
+    // Slide d'une autre page : rien ne doit rester masqué sur la page quittée,
+    // puis on ouvre la page de la slide (son fond peut différer)
+    if (pages && slide.pageId && slide.pageId !== presentation.pageId) {
+      const pageId = slide.pageId;
+      const opening = (async () => {
+        await callBridge("presentSlide", { frameId: null });
+        if (await pages.ensurePage(pageId)) await applyBackground();
+        presentation.pageId = pageId;
+      })();
+      presentation.pageSwitch = opening.catch(() => {});
+      await opening;
+      // Diaporama quitté ou autre slide demandée pendant le changement de page
+      if (state !== presentation || token !== presentation.navToken) return;
+    }
+    // Cadrage et étapes masquées en une seule mise à jour (pas de flash)
+    const total = await callBridge<number>("presentSlide", {
+      frameId: presentation.useSteps ? slide.id : null,
+      revealed,
       appState: {
         scrollX: view.scrollX,
         scrollY: view.scrollY,
@@ -240,6 +287,10 @@ async function navigateToSlide(index: number, animate = true): Promise<void> {
         frameRendering: SLIDE_FRAME_RENDERING,
       },
     });
+    if (presentation.useSteps && token === presentation.navToken) {
+      presentation.totalSteps = total;
+      presentation.revealed = Math.min(revealed, total);
+    }
   };
 
   const { type, duration } = state.transition;
@@ -247,6 +298,32 @@ async function navigateToSlide(index: number, animate = true): Promise<void> {
   if (!animate || type === "none" || duration <= 0) {
     setMask(view.rect);
     await jump();
+    return;
+  }
+
+  // Morph, Pan & zoom : joués sur le canevas par le bridge, entre deux slides
+  // de la même page. Le Morph crée des éléments temporaires : jamais en
+  // session collaborative (ils seraient envoyés aux participants).
+  const samePage = !pages || !slide.pageId || slide.pageId === presentation.pageId;
+  if ((type === "pan" || (type === "morph" && presentation.useSteps)) && samePage && fromSlide && fromSlide !== slide) {
+    const length = duration * CANVAS_DURATION_FACTOR;
+    animateMask(fromRect, view.rect, length, type === "pan");
+    const total = await callBridge<number>(type === "morph" ? "morph" : "fly", {
+      fromFrameId: fromSlide.id,
+      toFrameId: type === "morph" || presentation.useSteps ? slide.id : null,
+      revealed,
+      appState: {
+        scrollX: view.scrollX,
+        scrollY: view.scrollY,
+        zoom: { value: view.zoom },
+        frameRendering: SLIDE_FRAME_RENDERING,
+      },
+      duration: length,
+    });
+    if (presentation.useSteps && token === presentation.navToken) {
+      presentation.totalSteps = total;
+      presentation.revealed = Math.min(revealed, total);
+    }
     return;
   }
 
@@ -271,7 +348,53 @@ async function navigateToSlide(index: number, animate = true): Promise<void> {
 
   const after = captureRect(view.rect);
   const layerB = after ? makeSlideLayer(after, view.rect, filter) : null;
-  await runTransition(type, layerA, layerB, duration, forward, token);
+  // Morph, Pan & zoom entre deux pages : simple fondu
+  await runTransition(type === "morph" || type === "pan" ? "fade" : type, layerA, layerB, duration, forward, token);
+}
+
+// Cadre de la slide pendant un Morph : il passe de la slide quittée à la
+// suivante ; pendant un Pan & zoom, il s'ouvre sur tout l'écran le temps du voyage
+function animateMask(from: ScreenRect, to: ScreenRect, duration: number, open: boolean): void {
+  if (!state) return;
+  setMask(to);
+  const frame = (r: ScreenRect) => ({ left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px` });
+  const screenRect = { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+  const keyframes = open
+    ? [
+        { ...frame(from), offset: 0 },
+        { ...frame(screenRect), offset: 0.2 },
+        { ...frame(screenRect), offset: 0.8 },
+        { ...frame(to), offset: 1 },
+      ]
+    : [frame(from), frame(to)];
+  state.animations.push(state.mask.animate(keyframes, { duration, easing: open ? "ease-in-out" : EASING }));
+}
+
+// Étape suivante (ou précédente) de la slide affichée : l'état d'avant, figé,
+// s'efface en fondu au-dessus du nouveau
+async function changeStep(delta: number): Promise<void> {
+  if (!state) return;
+  // Page encore en cours d'ouverture : la slide n'est pas encore affichée
+  const presentation = state;
+  await presentation.pageSwitch;
+  if (state !== presentation) return;
+  finishTransition();
+  const token = ++state.navToken;
+  const slide = state.frames[state.currentIndex];
+  state.revealed = Math.max(0, Math.min(state.totalSteps, state.revealed + delta));
+
+  const { type, duration } = state.transition;
+  const before = type === "none" || duration <= 0 ? null : captureRect(state.currentRect);
+  const layer = before ? makeSlideLayer(before, state.currentRect, canvasFilter()) : null;
+  if (layer) {
+    state.stage.replaceChildren(layer);
+    state.stage.classList.add("active");
+  }
+  await callBridge("presentSlide", { frameId: slide.id, revealed: state.revealed });
+  if (!layer) return;
+  await waitForRender();
+  if (!state || token !== state.navToken) return;
+  await runTransition("fade", layer, null, Math.min(duration, STEP_FADE_MS), delta > 0, token);
 }
 
 // Calque plein écran, fond de la page, slide positionnée comme à l'écran
@@ -494,7 +617,7 @@ export async function enterPresentationMode(
   };
 
   const resizeHandler = () => {
-    if (state) navigateToSlide(state.currentIndex, false);
+    if (state) navigateToSlide(state.currentIndex, { animate: false, revealed: state.revealed });
   };
 
   // Échap en plein écran est capté par le navigateur : sortir du plein écran
@@ -512,9 +635,15 @@ export async function enterPresentationMode(
   const first = Math.min(Math.max(startIndex, 0), frames.length - 1);
   state = {
     pages,
+    pageId: pages?.originalPageId ?? null,
+    pageSwitch: Promise.resolve(),
     frames,
     currentIndex: first,
     currentRect: fitFrame(frames[first]).rect,
+    // En session collaborative, masquer des éléments le ferait pour tous
+    useSteps: !isCollabSession(),
+    revealed: 0,
+    totalSteps: 0,
     transition,
     originalAppState,
     overlay,
@@ -532,7 +661,7 @@ export async function enterPresentationMode(
     fullscreenHandler,
   };
 
-  await navigateToSlide(first, false);
+  await navigateToSlide(first, { animate: false });
   wakeUp();
 }
 
@@ -556,7 +685,11 @@ export async function exitPresentationMode(): Promise<void> {
   }
 
   try {
-    // Retour à la page de départ si le diaporama en a ouvert d'autres
+    // Page en cours d'ouverture : elle finit d'abord, sinon elle s'ouvrirait
+    // après le retour à la page de départ
+    await saved.pageSwitch;
+    // Tout réapparaît, puis retour à la page de départ si le diaporama en a ouvert d'autres
+    await callBridge("presentSlide", { frameId: null });
     if (saved.pages) await saved.pages.ensurePage(saved.pages.originalPageId);
     await callBridge("updateScene", {
       appState: {

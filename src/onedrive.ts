@@ -260,16 +260,20 @@ export async function readFile(id: string): Promise<string> {
   return res.text();
 }
 
-export async function writeFile(name: string, content: string): Promise<void> {
+// Date de modification du fichier écrit, telle que la liste du dossier la donnera
+const lastModifiedOf = (item: any): number | null =>
+  item?.lastModifiedDateTime ? Date.parse(item.lastModifiedDateTime) : null;
+
+export async function writeFile(name: string, content: string): Promise<number | null> {
   const folder = await requireFolder();
   const body = new TextEncoder().encode(content);
   if (body.length <= SIMPLE_UPLOAD_MAX) {
-    await apiJson(`${childPath(folder, name)}/content`, {
+    const item = await apiJson(`${childPath(folder, name)}/content`, {
       method: "PUT",
       headers: { "Content-Type": "text/plain" },
       body,
     });
-    return;
+    return lastModifiedOf(item);
   }
 
   // Gros fichier (images) : session d'envoi, morceaux multiples de 320 Kio
@@ -281,6 +285,7 @@ export async function writeFile(name: string, content: string): Promise<void> {
     }),
   });
   const chunk = 320 * 1024 * 16;
+  let item: any = null;
   for (let start = 0; start < body.length; start += chunk) {
     const end = Math.min(start + chunk, body.length);
     const res = await fetch(session.uploadUrl, {
@@ -290,7 +295,10 @@ export async function writeFile(name: string, content: string): Promise<void> {
       body: body.slice(start, end),
     });
     if (!res.ok) throw await httpError(res);
+    // Dernier morceau (200 ou 201) : la réponse décrit le fichier terminé
+    if (res.status !== 202) item = await res.json().catch(() => null);
   }
+  return lastModifiedOf(item);
 }
 
 export async function removeFile(name: string): Promise<void> {

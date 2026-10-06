@@ -64,7 +64,7 @@ document.getElementById("open")!.addEventListener("click", async () => {
     typesAndSources: { mode: "folders", pivots: { oneDrive: true, recent: false, shared: false } },
     selection: { mode: "single" },
     commands: { pick: { label: "Sync this folder" }, createFolder: { enabled: true } },
-    title: "Excalihub sync folder",
+    title: "ExcaliFree sync folder",
   };
   const query = new URLSearchParams({ filePicker: JSON.stringify(options), locale: "en-us" });
 

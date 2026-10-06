@@ -1,12 +1,13 @@
 {
   "manifest_version": 3,
-  "name": "Excalihub (personal)",
+  "name": "ExcaliFree",
   "version": "1.2.0",
   "description": "Pages, frame slideshows, LaTeX formulas, auto-save and OneDrive sync for Excalidraw",
   "permissions": [
     "storage",
     "unlimitedStorage",
-    "identity"
+    "identity",
+    "debugger"
   ],
   "host_permissions": [
     "https://login.microsoftonline.com/*",
@@ -56,7 +57,7 @@
   ],
   "commands": {
     "toggle-panel": {
-      "description": "Open / close the Excalihub panel"
+      "description": "Open / close the ExcaliFree panel"
     }
   }
 }

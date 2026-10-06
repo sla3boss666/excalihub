@@ -12,6 +12,7 @@ import {
   isQueueBusy,
   onSceneChanged,
   pickOneDriveFolder,
+  pushPage,
   resumeBackup,
   resumeMirror,
   runExclusive,
@@ -36,6 +37,7 @@ import {
   storeThumbnails,
   withEffectiveSections,
 } from "./deck";
+import { exportSlidesPdf } from "./exportPdf";
 import { getFramesFromScene, getSceneVersion } from "./frames";
 import { createPage, deletePage, getPagesIndex, isCollabSession, PageInfo, renamePage, switchToPage } from "./pages";
 import {
@@ -114,8 +116,16 @@ const ICON_PLAY = `<polygon points="5 3 19 12 5 21 5 3"></polygon>`;
 const ICON_PLUS = `<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>`;
 const ICON_EDIT = `<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>`;
 const ICON_TRASH = `<polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/>`;
-const ICON_CLOSE = `<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>`;
+// En-tête du panneau : icônes Tabler au trait fin, comme dans la barre du panneau latéral d'Excalidraw
+const tablerIcon = (paths: string) =>
+  `<svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><g stroke-width="1.25"><path stroke="none" d="M0 0h24v24H0z" fill="none"/>${paths}</g></svg>`;
+const ICON_TAB_PAGES = `<path d="M15 3v4a1 1 0 0 0 1 1h4"/><path d="M18 17h-7a2 2 0 0 1 -2 -2v-10a2 2 0 0 1 2 -2h4l5 5v7a2 2 0 0 1 -2 2z"/><path d="M16 17v2a2 2 0 0 1 -2 2h-7a2 2 0 0 1 -2 -2v-10a2 2 0 0 1 2 -2h2"/>`;
+const ICON_TAB_SLIDES = `<path d="M3 4l18 0"/><path d="M4 4v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-10"/><path d="M12 16l0 4"/><path d="M9 20l6 0"/><path d="M8 12l3 -3l2 2l3 -3"/>`;
+const ICON_TAB_FORMULAS = `<path d="M3 19a2 2 0 0 0 2 2c2 0 2 -4 3 -9s1 -9 3 -9a2 2 0 0 1 2 2"/><path d="M5 12h6"/><path d="M15 12l6 6"/><path d="M15 18l6 -6"/>`;
+const ICON_CLOSE_PANEL = `<svg aria-hidden="true" focusable="false" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5 5 15M5 5l10 10"/></svg>`;
 const ICON_REFRESH = `<polyline points="23 4 23 10 17 10"/><path d="M20.5 15a9 9 0 1 1-2.1-9.4L23 10"/>`;
+const ICON_DOWNLOAD = `<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>`;
+const ICON_STEPS = `<line x1="10" y1="6" x2="21" y2="6"/><line x1="10" y1="12" x2="21" y2="12"/><line x1="10" y1="18" x2="21" y2="18"/><path d="M4 6h1v4"/><path d="M4 10h2"/><path d="M6 18H4c0-1 2-2 2-3s-1-1.5-2-1"/>`;
 
 // ── Message temporaire (erreurs de formule…) ─────────────────────────
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
@@ -197,6 +207,7 @@ window.addEventListener("message", (e) => {
   if (e.data.type === "latex-candidates") convertFormulas(e.data.items);
   if (e.data.type === "scene-changed") onSceneChanged(e.data.signature);
   if (e.data.type === "toggle-panel") togglePanel();
+  if (e.data.type === "selection") renderSteps(e.data.info);
 });
 
 // ── Sauvegarde automatique : état affiché en tête de l'onglet Pages ───
@@ -234,7 +245,7 @@ function renderBackup(s: BackupState): void {
       box.innerHTML = `
         <p class="excalihub-backup-title">${svg(ICON_FOLDER)} OneDrive — step 1/3: Microsoft app</p>
         ${note}
-        <p>Register the Excalihub app in the Azure portal (see the guide) with this redirect URI
+        <p>Register the ExcaliFree app in the Azure portal (see the guide) with this redirect URI
           (type “Single-page application”):</p>
         <div class="excalihub-backup-field">
           <code>${escapeHtml(s.redirectUri)}</code>
@@ -427,17 +438,24 @@ function showTab(tab: Tab): void {
   activeTab = tab;
   document.querySelectorAll<HTMLElement>(".excalihub-tab").forEach((el) => {
     el.classList.toggle("active", el.dataset.tab === tab);
+    el.setAttribute("aria-selected", String(el.dataset.tab === tab));
   });
   document.querySelectorAll<HTMLElement>(".excalihub-tab-view").forEach((el) => {
     el.hidden = el.dataset.view !== tab;
   });
 
+  setStepsUI(tab === "slides");
   if (tab === "slides") {
     openSlidesTab();
     return;
   }
   stopPresPolling();
   if (tab === "pages") renderPages();
+}
+
+// Numéros d'étape sur le dessin et sélection suivie : onglet Slides ouvert seulement
+function setStepsUI(on: boolean): void {
+  callBridge("setStepsUI", on).catch(() => {});
 }
 
 function isPanelOpen(): boolean {
@@ -457,6 +475,7 @@ function togglePanel(): void {
 
 function closePanel(): void {
   stopPresPolling();
+  setStepsUI(false);
   document.getElementById("excalihub-panel")!.classList.remove("open");
   document.getElementById("excalihub-toggle")!.classList.remove("shifted");
 }
@@ -501,8 +520,9 @@ async function renderPages(): Promise<void> {
   );
 }
 
-// Toute opération qui change le canevas passe par ici (une seule à la fois)
-async function runPageOperation(operation: () => Promise<void>): Promise<void> {
+// Toute opération qui change le canevas passe par ici (une seule à la fois).
+// `switchOnly` : simple changement de page, sans synchro complète derrière.
+async function runPageOperation(operation: () => Promise<void>, switchOnly = false): Promise<void> {
   if (pagesBusy) return;
   pagesBusy = true;
   const list = document.getElementById("excalihub-pages-list")!;
@@ -510,12 +530,18 @@ async function runPageOperation(operation: () => Promise<void>): Promise<void> {
   // Une synchro en cours passe d'abord : on le dit au lieu de laisser la liste grisée
   if (isQueueBusy()) list.dataset.waiting = "Waiting for sync to finish…";
   try {
+    let leftId = "";
     // Jamais pendant une écriture de sauvegarde (et inversement)
-    await runExclusive(operation);
+    await runExclusive(async () => {
+      leftId = (await getPagesIndex()).currentId;
+      await operation();
+    });
     // Nouvelle scène : aperçus et liste de slides à refaire
     thumbsVersion = -1;
-    // Le dossier de sauvegarde reflète les pages (création, suppression…)
-    syncNow();
+    // Le dossier de sauvegarde reflète les pages : la page quittée suffit pour
+    // un changement de page, synchro complète sinon (création, suppression…)
+    if (switchOnly) pushPage(leftId);
+    else syncNow();
   } catch (err) {
     alert(`Operation failed: ${err instanceof Error ? err.message : String(err)}`);
   } finally {
@@ -575,7 +601,7 @@ function initPagesList(): void {
         runPageOperation(() => deletePage(id));
       }
     } else if (!item.classList.contains("active")) {
-      runPageOperation(() => switchToPage(id));
+      runPageOperation(() => switchToPage(id), true);
     }
   });
 
@@ -597,12 +623,15 @@ let thumbsVersion = -1; // version de la page affichée lors de ses aperçus
 let capturing = false;
 let collapsed = new Set<string>();
 let currentPageKey = ""; // frames de la page affichée, pour voir les changements
-let dragIndex: number | null = null;
+let sort: SortState | null = null; // slide en cours de déplacement
+let sortEndedAt = 0;
 
 const currentPageSlides = () => slides.filter((s) => s.isCurrentPage);
 
 function pageFramesKey(): string {
-  return JSON.stringify(getFramesFromScene().map((f) => [f.id, f.name, f.order, f.section, f.width, f.height]));
+  return JSON.stringify(
+    getFramesFromScene().map((f) => [f.id, f.name, f.order, f.section, f.width, f.height, f.steps]),
+  );
 }
 
 async function reloadSlides(): Promise<void> {
@@ -663,7 +692,7 @@ function updateStaleIndicator(): void {
 
 // La page affichée a changé (frame ajouté, renommé, page changée…) : on relit tout
 function watchCurrentPage(): void {
-  if (capturing || dragIndex !== null || document.querySelector(".excalihub-section-rename")) return;
+  if (capturing || sort || document.querySelector(".excalihub-section-rename")) return;
   if (pageFramesKey() !== currentPageKey) reloadSlides();
   else updateStaleIndicator();
 }
@@ -671,8 +700,10 @@ function watchCurrentPage(): void {
 function updatePresSubtitle(): void {
   const count = document.getElementById("excalihub-slides-count");
   if (count) count.textContent = `Slides (${slides.length})`;
-  const startBtn = document.getElementById("excalihub-pres-start") as HTMLButtonElement | null;
-  if (startBtn) startBtn.disabled = slides.length === 0;
+  for (const id of ["excalihub-pres-start", "excalihub-pres-pdf"]) {
+    const button = document.getElementById(id) as HTMLButtonElement | null;
+    if (button) button.disabled = slides.length === 0;
+  }
 }
 
 function startPresPolling(): void {
@@ -693,8 +724,8 @@ const ICON_SECTION = `<line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x
 function buildSlideItemEl(slide: Slide, index: number, filter: string, showPage: boolean): HTMLElement {
   const item = document.createElement("div");
   item.className = `excalihub-pres-slide-item${slide.isCurrentPage ? "" : " other-page"}`;
-  item.draggable = true;
   item.dataset.index = String(index);
+  item.dataset.id = slide.id;
   item.title = "Drag to reorder · Double-click to present from here";
   item.innerHTML = `
     <span class="excalihub-pres-slide-number">${index + 1}</span>
@@ -702,6 +733,12 @@ function buildSlideItemEl(slide: Slide, index: number, filter: string, showPage:
       <div class="excalihub-pres-thumb"></div>
       <span class="excalihub-pres-slide-name">${escapeHtml(slide.name)}${
         showPage ? `<span class="excalihub-slide-page">${escapeHtml(slide.pageName)}</span>` : ""
+      }${
+        slide.steps
+          ? `<span class="excalihub-slide-steps" title="Revealed in ${slide.steps} click${slide.steps > 1 ? "s" : ""}">${
+              slide.steps
+            } step${slide.steps > 1 ? "s" : ""}</span>`
+          : ""
       }</span>
     </div>
     <button class="excalihub-icon-btn excalihub-slide-add-section" data-action="add-section"
@@ -742,6 +779,7 @@ function buildSectionHeader(group: SectionGroup): HTMLElement {
     <span class="excalihub-section-name">${escapeHtml(section.name)}</span>
     <span class="excalihub-section-count">(${group.slides.length})</span>
     <span class="excalihub-section-actions">
+      <button class="excalihub-icon-btn" data-action="export-section" title="Export this section as PDF">${svg(ICON_DOWNLOAD)}</button>
       <button class="excalihub-icon-btn" data-action="rename-section" title="Rename section">${svg(ICON_EDIT)}</button>
       <button class="excalihub-icon-btn danger" data-action="delete-section"
         title="Remove section (slides are kept)">${svg(ICON_TRASH)}</button>
@@ -752,7 +790,7 @@ function buildSectionHeader(group: SectionGroup): HTMLElement {
 
 function rebuildSlideItems(): void {
   const container = document.getElementById("excalihub-pres-slides");
-  if (!container) return;
+  if (!container || sort) return; // pendant un glisser : la liste est reconstruite au lâcher
 
   if (slides.length === 0) {
     container.innerHTML = `
@@ -854,66 +892,268 @@ function toggleSection(sectionId: string): void {
   rebuildSlideItems();
 }
 
-// Déplacement : la slide prend la place visée et adopte la section de cet endroit
-function moveSlide(from: number, to: number, section: Slide["section"]): void {
-  const next = slides.map((s) => ({ ...s }));
+// ── Réorganisation des slides à la souris ─────────────────────────────
+// La slide saisie suit le pointeur ; les autres slides et les titres de
+// section glissent en direct pour lui faire de la place, et les numéros
+// suivent. Rien n'est enregistré avant le lâcher ; Échap annule.
+// Les slides sont repérées par leur identifiant : la liste peut être
+// rechargée pendant le glisser sans fausser le résultat.
+interface SortState {
+  el: HTMLElement; // slide saisie
+  id: string;
+  pointerId: number;
+  grabOffset: number; // du haut de la slide au pointeur, en px
+  pointerY: number; // dernière position verticale du pointeur
+  ty: number; // décalage actuel de la slide saisie
+  scrollFrame: number;
+}
+
+type SortTarget = { pos: number; section: Slide["section"]; expand: string | null };
+
+const SORT_DURATION = 200;
+const SORT_EASING = "cubic-bezier(0.2, 0, 0, 1)";
+const SORT_ANIMATION = "excalihub-sort";
+
+// Position verticale dans le contenu de la liste, défilement compris
+function toListY(container: HTMLElement, clientY: number): number {
+  return clientY - container.getBoundingClientRect().top - container.clientTop + container.scrollTop;
+}
+
+// Où la slide atterrirait : juste après l'élément qui la précède dans la liste
+function sortTarget(el: HTMLElement): SortTarget | null {
+  const prev = el.previousElementSibling as HTMLElement | null;
+  if (!prev) return { pos: 0, section: slides[0]?.section ?? null, expand: null };
+  if (prev.dataset.id) {
+    const i = slides.findIndex((x) => x.id === prev.dataset.id);
+    return i < 0 ? null : { pos: i + 1, section: slides[i].section, expand: null };
+  }
+  const sectionId = prev.dataset.section;
+  const members = slides.flatMap((x, i) => (x.section?.id === sectionId ? [i] : []));
+  if (!sectionId || !members.length) return null;
+  const section = slides[members[0]].section;
+  // Section réduite : la slide va à sa fin, et la section sera rouverte pour la montrer
+  if (prev.classList.contains("collapsed")) {
+    return { pos: members[members.length - 1] + 1, section, expand: sectionId };
+  }
+  return { pos: members[0], section, expand: null };
+}
+
+// Ordre obtenu en déplaçant la slide ; null s'il ne change pas
+function movedSlides(id: string, target: SortTarget | null): Slide[] | null {
+  const from = slides.findIndex((x) => x.id === id);
+  if (!target || from < 0) return null;
+  const next = slides.map((x) => ({ ...x }));
   const [moved] = next.splice(from, 1);
-  moved.section = section;
-  next.splice(Math.min(to, next.length), 0, moved);
-  commitSlides(next);
+  const to = target.pos > from ? target.pos - 1 : target.pos;
+  if (to === from && (moved.section?.id ?? null) === (target.section?.id ?? null)) return null;
+  moved.section = target.section;
+  next.splice(to, 0, moved);
+  return next;
+}
+
+// Numéros des slides et nombre de slides par section, pendant le glisser
+function previewSortNumbers(container: HTMLElement, s: SortState): void {
+  const order = movedSlides(s.id, sortTarget(s.el)) ?? slides;
+  const rank = new Map(order.map((x, i) => [x.id, i + 1]));
+  container.querySelectorAll<HTMLElement>(".excalihub-pres-slide-item").forEach((item) => {
+    const number = item.querySelector(".excalihub-pres-slide-number");
+    const n = rank.get(item.dataset.id ?? "");
+    if (number && n) number.textContent = String(n);
+  });
+  container.querySelectorAll<HTMLElement>(".excalihub-section").forEach((header) => {
+    const count = header.querySelector(".excalihub-section-count");
+    if (count) count.textContent = `(${order.filter((x) => x.section?.id === header.dataset.section).length})`;
+  });
+}
+
+function placeSortedEl(container: HTMLElement, s: SortState): void {
+  s.ty = toListY(container, s.pointerY) - s.grabOffset - s.el.offsetTop;
+  s.el.style.translate = `0 ${s.ty}px`;
+}
+
+// Positions affichées (animations en cours comprises), pour animer les déplacements
+function listKey(el: HTMLElement): string | null {
+  return el.dataset.id ? `slide:${el.dataset.id}` : el.dataset.section ? `section:${el.dataset.section}` : null;
+}
+
+function visualTops(container: HTMLElement): Map<string, number> {
+  const tops = new Map<string, number>();
+  for (const el of Array.from(container.children) as HTMLElement[]) {
+    const key = listKey(el);
+    if (key) tops.set(key, toListY(container, el.getBoundingClientRect().top));
+  }
+  return tops;
+}
+
+// Chaque élément part de sa position affichée et glisse jusqu'à sa nouvelle place
+function animateFrom(container: HTMLElement, tops: Map<string, number>, skip?: HTMLElement): void {
+  const options = { duration: SORT_DURATION, easing: SORT_EASING, id: SORT_ANIMATION };
+  for (const el of Array.from(container.children) as HTMLElement[]) {
+    if (el === skip) continue;
+    el.getAnimations().forEach((a) => {
+      if (a.id === SORT_ANIMATION) a.cancel();
+    });
+    const key = listKey(el);
+    const from = key ? tops.get(key) : undefined;
+    if (from === undefined) {
+      el.animate([{ opacity: 0 }, { opacity: 1 }], options); // élément qui apparaît (section rouverte)
+    } else if (Math.abs(from - el.offsetTop) >= 1) {
+      el.animate([{ transform: `translateY(${from - el.offsetTop}px)` }, { transform: "none" }], options);
+    }
+  }
+}
+
+// La slide saisie a dépassé le milieu d'un voisin : elle prend sa place
+function updateSortSlot(container: HTMLElement, s: SortState): void {
+  const center = toListY(container, s.pointerY) - s.grabOffset + s.el.offsetHeight / 2;
+  const middle = (el: Element) => (el as HTMLElement).offsetTop + (el as HTMLElement).offsetHeight / 2;
+  const passed: Element[] = []; // voisins dépassés, du plus proche au plus loin
+  for (let n = s.el.nextElementSibling; n && center > middle(n); n = n.nextElementSibling) passed.push(n);
+  const down = passed.length > 0;
+  if (!down) {
+    for (let p = s.el.previousElementSibling; p && center < middle(p); p = p.previousElementSibling) {
+      // Jamais avant le premier titre de section : la slide n'aurait plus de section
+      if (p.classList.contains("excalihub-section") && !p.previousElementSibling) break;
+      passed.push(p);
+    }
+  }
+  if (!passed.length) return;
+  const tops = visualTops(container);
+  // La slide saisie reste dans le DOM (retirée, même un instant, elle perdrait
+  // la capture du pointeur) : ce sont les voisins dépassés qui changent de côté
+  if (down) s.el.before(...passed);
+  else s.el.after(...passed.reverse());
+  animateFrom(container, tops, s.el);
+  placeSortedEl(container, s);
+  previewSortNumbers(container, s);
+}
+
+// Défilement automatique quand le pointeur approche du haut ou du bas de la liste
+function sortAutoScroll(container: HTMLElement, s: SortState): void {
+  if (sort !== s) return;
+  const rect = container.getBoundingClientRect();
+  const edge = 40;
+  const over =
+    s.pointerY < rect.top + edge ? s.pointerY - (rect.top + edge) : Math.max(0, s.pointerY - (rect.bottom - edge));
+  if (over) {
+    const before = container.scrollTop;
+    container.scrollTop += Math.max(-8, Math.min(8, over / 6)); // vitesse max : 8 px par image
+    if (container.scrollTop !== before) {
+      placeSortedEl(container, s);
+      updateSortSlot(container, s);
+    }
+  }
+  s.scrollFrame = requestAnimationFrame(() => sortAutoScroll(container, s));
+}
+
+function onSortKey(e: KeyboardEvent): void {
+  if (e.key !== "Escape" || !sort) return;
+  e.preventDefault();
+  e.stopPropagation(); // Échap annule le déplacement sans fermer le panneau
+  finishSort(document.getElementById("excalihub-pres-slides")!, false);
+}
+
+function startSort(container: HTMLElement, item: HTMLElement, e: PointerEvent, downY: number): void {
+  const s: SortState = {
+    el: item,
+    id: item.dataset.id!,
+    pointerId: e.pointerId,
+    grabOffset: toListY(container, downY) - item.offsetTop,
+    pointerY: e.clientY,
+    ty: 0,
+    scrollFrame: 0,
+  };
+  sort = s;
+  item.setPointerCapture(e.pointerId);
+  item.classList.add("lifted");
+  container.classList.add("sorting");
+  window.addEventListener("keydown", onSortKey, true);
+  placeSortedEl(container, s);
+  updateSortSlot(container, s);
+  s.scrollFrame = requestAnimationFrame(() => sortAutoScroll(container, s));
+}
+
+// Lâcher : la liste est reconstruite dans le nouvel ordre (ou l'ancien, si
+// annulé) et chaque élément glisse depuis sa position affichée jusqu'à sa place
+function finishSort(container: HTMLElement, apply: boolean): void {
+  const s = sort;
+  if (!s) return;
+  cancelAnimationFrame(s.scrollFrame);
+  window.removeEventListener("keydown", onSortKey, true);
+  const target = apply ? sortTarget(s.el) : null;
+  const next = apply ? movedSlides(s.id, target) : null;
+  const tops = visualTops(container);
+  sort = null;
+  sortEndedAt = performance.now();
+  container.classList.remove("sorting");
+  if (next && target?.expand) {
+    collapsed.delete(target.expand);
+    saveCollapsed(collapsed).catch(() => {});
+  }
+  if (next) commitSlides(next); // reconstruit la liste tout de suite, enregistre ensuite
+  else rebuildSlideItems();
+  animateFrom(container, tops);
+  // La slide lâchée garde un instant son agrandissement, puis se pose
+  const dropped = container.querySelector<HTMLElement>(`.excalihub-pres-slide-item[data-id="${CSS.escape(s.id)}"]`);
+  dropped?.animate([{ scale: "1.02" }, { scale: "1" }], { duration: SORT_DURATION, easing: SORT_EASING });
+}
+
+function initSlideSorting(container: HTMLElement): void {
+  // Le glisser ne commence qu'après quelques pixels : clic et double-clic restent possibles
+  let pressed: { el: HTMLElement; pointerId: number; x: number; y: number } | null = null;
+
+  container.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || sort) return;
+    const target = e.target as HTMLElement;
+    const item = target.closest(".excalihub-pres-slide-item") as HTMLElement | null;
+    if (!item?.dataset.id || target.closest("[data-action], input")) return;
+    pressed = { el: item, pointerId: e.pointerId, x: e.clientX, y: e.clientY };
+  });
+
+  container.addEventListener("pointermove", (e) => {
+    if (sort) {
+      if (e.pointerId !== sort.pointerId) return;
+      sort.pointerY = e.clientY;
+      placeSortedEl(container, sort);
+      updateSortSlot(container, sort);
+      return;
+    }
+    if (!pressed || e.pointerId !== pressed.pointerId) return;
+    if (Math.hypot(e.clientX - pressed.x, e.clientY - pressed.y) < 5) return;
+    const { el, y } = pressed;
+    pressed = null;
+    startSort(container, el, e, y);
+  });
+
+  const release = (e: PointerEvent) => {
+    if (pressed?.pointerId === e.pointerId) pressed = null;
+    if (sort?.pointerId === e.pointerId) finishSort(container, e.type === "pointerup");
+  };
+  container.addEventListener("pointerup", release);
+  container.addEventListener("pointercancel", release);
+  container.addEventListener("lostpointercapture", (e) => {
+    if (sort?.pointerId === e.pointerId) finishSort(container, true);
+  });
 }
 
 function initSlideList(): void {
   const container = document.getElementById("excalihub-pres-slides")!;
-  const clearMarks = () => container.querySelectorAll(".drag-over").forEach((el) => el.classList.remove("drag-over"));
   let clickTimer: ReturnType<typeof setTimeout> | null = null;
 
-  container.addEventListener("dragstart", (e) => {
-    const item = (e.target as HTMLElement).closest(".excalihub-pres-slide-item") as HTMLElement;
-    if (!item) return;
-    dragIndex = Number(item.dataset.index);
-    item.classList.add("dragging");
-    e.dataTransfer!.effectAllowed = "move";
-  });
-
-  container.addEventListener("dragend", (e) => {
-    (e.target as HTMLElement).closest(".excalihub-pres-slide-item")?.classList.remove("dragging");
-    clearMarks();
-    dragIndex = null;
-  });
-
-  container.addEventListener("dragover", (e) => {
-    e.preventDefault();
-    e.dataTransfer!.dropEffect = "move";
-    const target = (e.target as HTMLElement).closest(".excalihub-pres-slide-item, .excalihub-section") as HTMLElement;
-    if (!target || Number(target.dataset.index) === dragIndex) return;
-    clearMarks();
-    target.classList.add("drag-over");
-  });
-
-  container.addEventListener("drop", (e) => {
-    e.preventDefault();
-    const from = dragIndex;
-    if (from === null) return;
-    const item = (e.target as HTMLElement).closest(".excalihub-pres-slide-item") as HTMLElement | null;
-    const header = (e.target as HTMLElement).closest(".excalihub-section") as HTMLElement | null;
-    if (item) {
-      const to = Number(item.dataset.index);
-      if (to !== from) moveSlide(from, to, slides[to].section);
-    } else if (header) {
-      // Sur un titre de section : en tête de cette section
-      const start = Number(header.dataset.start);
-      moveSlide(from, from < start ? start - 1 : start, slides[start].section);
-    }
-  });
+  initSlideSorting(container);
 
   container.addEventListener("click", (e) => {
     const target = e.target as HTMLElement;
     if (target.closest("input")) return;
+    if (performance.now() - sortEndedAt < 100) return; // clic de fin d'un glisser
     const action = (target.closest("[data-action]") as HTMLElement | null)?.dataset.action;
     const header = target.closest(".excalihub-section") as HTMLElement | null;
     if (action === "add-section") {
       addSectionAt(Number((target.closest(".excalihub-pres-slide-item") as HTMLElement).dataset.index));
+    } else if (header && action === "export-section") {
+      const id = header.dataset.section!;
+      const section = slides.filter((s) => s.section?.id === id);
+      exportPdf(section, section[0]?.section?.name ?? "Slides");
     } else if (header && action === "rename-section") {
       startSectionRename(header.dataset.section!);
     } else if (header && action === "delete-section") {
@@ -940,12 +1180,17 @@ function initSlideList(): void {
   });
 }
 
-// Ouvre la page d'une slide (diaporama sur plusieurs pages)
+// Ouvre la page d'une slide (diaporama sur plusieurs pages). Décidé dans la
+// file des opérations : un changement de page encore en attente compte.
 async function ensurePage(pageId: string): Promise<boolean> {
-  const index = await getPagesIndex();
-  if (index.currentId === pageId || !index.pages.some((p) => p.id === pageId)) return false;
-  await runExclusive(() => switchToPage(pageId));
-  return true;
+  let changed = false;
+  await runExclusive(async () => {
+    const index = await getPagesIndex();
+    if (index.currentId === pageId || !index.pages.some((p) => p.id === pageId)) return;
+    await switchToPage(pageId);
+    changed = true;
+  });
+  return changed;
 }
 
 async function startPresentation(startIndex = 0): Promise<void> {
@@ -960,11 +1205,94 @@ async function startPresentation(startIndex = 0): Promise<void> {
   );
 }
 
+// ── Apparition au clic : étape des éléments sélectionnés ──────────────
+// Sélection décrite par le bridge (voir bridge.ts, notifySelection)
+interface SelectionInfo {
+  count: number; // éléments sélectionnés dans un frame
+  frames: number;
+  outside: number; // éléments hors de tout frame
+  step: number | null | "mixed";
+  frameSteps: number; // étapes déjà définies dans le frame
+}
+
+function renderSteps(info: SelectionInfo | null): void {
+  const box = document.getElementById("excalihub-steps");
+  if (!box) return;
+  const title = `<div class="excalihub-steps-title">${svg(ICON_STEPS)} Reveal on click</div>`;
+  const hint = (text: string) => `${title}<p class="excalihub-steps-hint">${text}</p>`;
+
+  if (!info || info.count + info.outside === 0) {
+    box.innerHTML = hint("Select shapes inside a frame to make them appear one click at a time in the slideshow.");
+  } else if (info.frames === 0) {
+    box.innerHTML = hint("These shapes are not inside a frame: they are always visible.");
+  } else if (info.frames > 1) {
+    box.innerHTML = hint("Select shapes from a single frame.");
+  } else {
+    const button = (value: string, label: string, tip: string, active: boolean, extra = "") =>
+      `<button class="excalihub-step-btn${active ? " active" : ""}${extra}" data-step="${value}" title="${tip}">${label}</button>`;
+    const buttons = [button("none", "Always", "Visible as soon as the slide appears", info.step === null)];
+    for (let n = 1; n <= info.frameSteps; n++) buttons.push(button(String(n), String(n), `Appear at click ${n}`, info.step === n));
+    buttons.push(button("next", `${svg(ICON_PLUS, 12)} Click`, "Appear at a new click, after the others", false, " add"));
+    box.innerHTML = `${title}
+      <div class="excalihub-steps-label">${info.count} shape${info.count > 1 ? "s" : ""} selected · appear:</div>
+      <div class="excalihub-steps-buttons">${buttons.join("")}</div>`;
+  }
+}
+
+function initStepsBox(): void {
+  renderSteps(null);
+  document.getElementById("excalihub-steps")!.addEventListener("click", (e) => {
+    const value = ((e.target as HTMLElement).closest("[data-step]") as HTMLElement | null)?.dataset.step;
+    if (!value) return;
+    const step = value === "none" ? null : value === "next" ? "next" : Number(value);
+    callBridge("setStep", step).catch((err) => showToast(`Step not saved: ${(err as Error).message}`));
+  });
+}
+
+// ── Export PDF : tout le diaporama ou une section ─────────────────────
+async function exportPdf(subset: Slide[], name: string): Promise<void> {
+  if (capturing || subset.length === 0) return;
+  capturing = true;
+  const cover = document.createElement("div");
+  cover.className = "excalihub-capture-cover";
+  cover.textContent = "Creating PDF…";
+  document.body.appendChild(cover);
+  try {
+    const result: { pdf?: Blob | null } = {};
+    // En série avec la synchro : les pages enregistrées des slides sont lues
+    await runExclusive(async () => {
+      result.pdf = await exportSlidesPdf(subset, name, (done, total) => {
+        cover.textContent = `Creating PDF… ${done} / ${total}`;
+      });
+    });
+    // null : enregistré depuis la fenêtre d'impression de Chrome
+    if (result.pdf) {
+      const link = document.createElement("a");
+      link.download = `${name.replace(/[\\/:*?"<>|]/g, "_").trim() || "Slides"}.pdf`;
+      link.href = URL.createObjectURL(result.pdf);
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(link.href), 10_000);
+    }
+  } catch (err) {
+    alert(`PDF export failed: ${(err as Error)?.message ?? String(err)}`);
+  } finally {
+    cover.remove();
+    capturing = false;
+    updateStaleIndicator();
+  }
+}
+
+// Nom du PDF du diaporama entier : la page, si toutes les slides en viennent
+function deckName(): string {
+  const pages = new Set(slides.map((s) => s.pageName));
+  return pages.size === 1 ? [...pages][0] : "Slides";
+}
+
 // ── Construction du panneau ───────────────────────────────────────────
 function createPanel(): void {
   const toggle = document.createElement("button");
   toggle.id = "excalihub-toggle";
-  toggle.textContent = "Excalihub";
+  toggle.textContent = "ExcaliFree";
   document.body.appendChild(toggle);
 
   const transitionOptions = TRANSITIONS.map(
@@ -975,10 +1303,12 @@ function createPanel(): void {
   panel.id = "excalihub-panel";
   panel.innerHTML = `
     <div class="excalihub-tabs">
-      <button class="excalihub-tab" data-tab="pages">Pages</button>
-      <button class="excalihub-tab" data-tab="slides">Slides</button>
-      <button class="excalihub-tab" data-tab="latex">Formulas</button>
-      <button class="excalihub-icon-btn excalihub-close" id="excalihub-close" title="Close (Ctrl+X)">${svg(ICON_CLOSE)}</button>
+      <div class="excalihub-tab-triggers" role="tablist">
+        <button type="button" class="excalihub-tab" data-tab="pages" role="tab" title="Pages" aria-label="Pages">${tablerIcon(ICON_TAB_PAGES)}</button>
+        <button type="button" class="excalihub-tab" data-tab="slides" role="tab" title="Slides" aria-label="Slides">${tablerIcon(ICON_TAB_SLIDES)}</button>
+        <button type="button" class="excalihub-tab" data-tab="latex" role="tab" title="Formulas" aria-label="Formulas">${tablerIcon(ICON_TAB_FORMULAS)}</button>
+      </div>
+      <button type="button" class="excalihub-close" id="excalihub-close" title="Close (Ctrl+X)" aria-label="Close">${ICON_CLOSE_PANEL}</button>
     </div>
 
     <div class="excalihub-tab-view" data-view="latex" hidden>
@@ -1020,6 +1350,7 @@ function createPanel(): void {
           ${svg(ICON_REFRESH)}
         </button>
       </div>
+      <div class="excalihub-steps" id="excalihub-steps"></div>
       <div class="excalihub-pres-slides" id="excalihub-pres-slides"></div>
       <div class="excalihub-pres-footer">
         <div class="excalihub-pres-settings">
@@ -1036,9 +1367,14 @@ function createPanel(): void {
             </select>
           </label>
         </div>
-        <button class="excalihub-btn primary excalihub-pres-start-btn" id="excalihub-pres-start" disabled>
-          ${svg(ICON_PLAY, 16)} Start slideshow
-        </button>
+        <div class="excalihub-pres-actions">
+          <button class="excalihub-btn primary excalihub-pres-start-btn" id="excalihub-pres-start" disabled>
+            ${svg(ICON_PLAY, 16)} Start slideshow
+          </button>
+          <button class="excalihub-btn excalihub-pres-pdf-btn" id="excalihub-pres-pdf" title="Export all slides as PDF" disabled>
+            ${svg(ICON_DOWNLOAD, 16)} PDF
+          </button>
+        </div>
       </div>
     </div>
   `;
@@ -1087,9 +1423,11 @@ function createPanel(): void {
 
   document.getElementById("excalihub-thumbs-refresh")!.addEventListener("click", () => refreshThumbnails());
   document.getElementById("excalihub-pres-start")!.addEventListener("click", () => startPresentation(0));
+  document.getElementById("excalihub-pres-pdf")!.addEventListener("click", () => exportPdf(slides, deckName()));
 
   initPagesList();
   initSlideList();
+  initStepsBox();
   initBackupBox();
   applyTheme();
   observeTheme();
@@ -1120,7 +1458,7 @@ const aliveWatch = setInterval(() => {
   stopPresPolling();
   document.getElementById("excalihub-panel")?.remove();
   document.getElementById("excalihub-toggle")?.remove();
-  showToast("Excalihub was updated: reload the page (F5) to turn it back on.");
+  showToast("ExcaliFree was updated: reload the page (F5) to turn it back on.");
 }, 1000);
 
 createPanel();

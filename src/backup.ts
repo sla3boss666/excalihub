@@ -53,7 +53,7 @@ interface Backend {
   label: string; // affiché : « OneDrive › Excalidraw », nom du dossier local…
   list(): Promise<Entry[]>;
   read(entry: Entry): Promise<string>;
-  write(name: string, content: string): Promise<void>;
+  write(name: string, content: string): Promise<number | null>; // date du fichier écrit, si connue
   remove(name: string): Promise<void>;
 }
 
@@ -63,13 +63,17 @@ interface RemotePage {
   pageId: string;
   name: string;
   updatedAt: number;
+  data?: any; // contenu déjà téléchargé pendant la lecture du dossier
 }
+
+type FileMeta = Pick<RemotePage, "pageId" | "name" | "updatedAt">;
 
 const DB_NAME = "excalihub";
 const STORE = "handles";
 const HANDLE_KEY = "backupDir";
 const MODE_KEY = "excalihub_backup_mode";
 const RECORDS_KEY = "excalihub_backup_files";
+const CACHE_KEY = "excalihub_backup_cache"; // ce que contient chaque fichier du dossier
 const OD_CONFIG_KEY = "excalihub_od_config"; // tenu par le service worker (onedrive.ts)
 const OD_TOKENS_KEY = "excalihub_od_tokens";
 const DEBOUNCE_MS = 1500; // écriture après la dernière modification…
@@ -90,7 +94,10 @@ let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 let maxTimer: ReturnType<typeof setTimeout> | null = null;
 let syncTimer: ReturnType<typeof setTimeout> | null = null;
 const missingSince = new Map<string, number>();
-const fileCache = new Map<string, { lastModified: number; meta: Omit<RemotePage, "file" | "entry"> | null }>();
+// Fichier → page qu'il contient, valable tant que sa date ne change pas : seuls
+// les fichiers modifiés ailleurs sont téléchargés. Gardé d'un chargement à l'autre.
+const fileCache = new Map<string, { lastModified: number; meta: FileMeta | null }>();
+let fileCacheLoaded = false;
 
 function setState(next: BackupState): void {
   state = next;
@@ -153,6 +160,7 @@ function localBackend(handle: any): Backend {
       const writable = await file.createWritable(); // remplace le fichier à la fermeture
       await writable.write(content);
       await writable.close();
+      return (await file.getFile()).lastModified;
     },
     async remove(name) {
       await handle.removeEntry(name).catch(() => {});
@@ -176,7 +184,7 @@ function oneDriveBackend(folderName: string): Backend {
     label: `OneDrive › ${folderName}`,
     list: () => od<Entry[]>("od:list"),
     read: (entry) => od<string>("od:read", { id: entry.ref }),
-    write: (name, content) => od<void>("od:write", { name, content }),
+    write: (name, content) => od<number | null>("od:write", { name, content }),
     remove: (name) => od<void>("od:remove", { name }),
   };
 }
@@ -242,21 +250,58 @@ function fileNameFor(page: PageInfo): string {
 }
 
 async function loadRecords(): Promise<SyncRecords> {
-  const stored = (await chrome.storage.local.get(RECORDS_KEY))[RECORDS_KEY] ?? {};
+  const stored = await chrome.storage.local.get([RECORDS_KEY, CACHE_KEY]);
+  // Cache relu une fois (avant tout enregistrement, qui le réécrit en entier)
+  if (!fileCacheLoaded) {
+    fileCacheLoaded = true;
+    for (const [file, cached] of Object.entries(stored[CACHE_KEY] ?? {})) {
+      if (!fileCache.has(file)) fileCache.set(file, cached as { lastModified: number; meta: FileMeta });
+    }
+  }
   // Ancien format (version sans synchronisation) : id → nom de fichier
   const records: SyncRecords = {};
-  for (const [id, value] of Object.entries(stored as Record<string, unknown>)) {
+  for (const [id, value] of Object.entries((stored[RECORDS_KEY] ?? {}) as Record<string, unknown>)) {
     records[id] = typeof value === "string" ? { file: value, syncedAt: 0, signature: "" } : (value as SyncRecord);
   }
   return records;
 }
 
-const saveRecords = (records: SyncRecords) => chrome.storage.local.set({ [RECORDS_KEY]: records });
+function saveRecords(records: SyncRecords): Promise<void> {
+  const cache = [...fileCache].filter(([, cached]) => cached.meta);
+  return chrome.storage.local.set({ [RECORDS_KEY]: records, [CACHE_KEY]: Object.fromEntries(cache) });
+}
+
+// Fichier que l'on vient d'écrire : inutile de le retélécharger au prochain passage
+function rememberWrite(file: string, lastModified: number | null, meta: FileMeta): void {
+  if (lastModified) fileCache.set(file, { lastModified, meta });
+  else fileCache.delete(file);
+}
+
+// Écrit une page dans le dossier (et retire son ancien fichier si elle a été renommée)
+async function writePage(target: Backend, page: PageInfo, scene: any, records: SyncRecords): Promise<number> {
+  const file = fileNameFor(page);
+  const updatedAt = Date.now();
+  const written = await target.write(file, toExcalidrawFile(scene, page, updatedAt));
+  rememberWrite(file, written, { pageId: page.id, name: page.name, updatedAt });
+  const previous = records[page.id];
+  if (previous && previous.file.toLowerCase() !== file.toLowerCase()) {
+    await target.remove(previous.file);
+    fileCache.delete(previous.file);
+  }
+  records[page.id] = { file, syncedAt: updatedAt, signature: sceneSignature(scene) };
+  return updatedAt;
+}
+
+// Contenu de la page identique à son fichier du dossier
+function isUpToDate(record: SyncRecord | undefined, page: PageInfo, signature: string): boolean {
+  return !!record && record.signature === signature && record.file === fileNameFor(page);
+}
 
 // Nouveau dossier (ou nouveau mode) : rien à y nettoyer, tout est à resynchroniser
 async function resetSyncState(): Promise<void> {
-  await chrome.storage.local.remove(RECORDS_KEY);
+  await chrome.storage.local.remove([RECORDS_KEY, CACHE_KEY]);
   fileCache.clear();
+  fileCacheLoaded = true; // plus rien à relire
   missingSince.clear();
   lastSignature = "";
 }
@@ -298,15 +343,25 @@ function setOk(savedAt: number | null): void {
 async function readFolder(records: SyncRecords): Promise<Map<string, RemotePage>> {
   const byFile = new Map(Object.entries(records).map(([id, r]) => [r.file.toLowerCase(), id]));
   const pages = new Map<string, RemotePage>();
+  const listed = new Set<string>();
 
   for (const entry of await backend!.list()) {
     const file = entry.name;
     if (!file.toLowerCase().endsWith(".excalidraw")) continue;
+    listed.add(file);
     let cached = fileCache.get(file);
+    let data: any = null;
     if (!cached || cached.lastModified !== entry.lastModified) {
-      let meta: Omit<RemotePage, "file" | "entry"> | null = null;
+      let text: string;
       try {
-        const data = JSON.parse(await backend!.read(entry));
+        text = await backend!.read(entry);
+      } catch (err) {
+        if ((err as { name?: string })?.name === "NotFoundError") continue; // supprimé entre-temps
+        throw err; // réseau… : aucune décision prise sur un dossier lu à moitié
+      }
+      let meta: FileMeta | null = null;
+      try {
+        data = JSON.parse(text);
         const pageId = data?.excalihub?.pageId ?? byFile.get(file.toLowerCase());
         if (data?.type === "excalidraw" && pageId) {
           meta = {
@@ -316,7 +371,7 @@ async function readFolder(records: SyncRecords): Promise<Map<string, RemotePage>
           };
         }
       } catch {
-        // Fichier en cours d'écriture ou de synchronisation : relu au prochain passage
+        // Fichier en cours d'écriture ou de synchronisation : relu quand sa date changera
       }
       cached = { lastModified: entry.lastModified, meta };
       fileCache.set(file, cached);
@@ -324,13 +379,20 @@ async function readFolder(records: SyncRecords): Promise<Map<string, RemotePage>
     const meta = cached.meta;
     if (!meta) continue;
     const known = pages.get(meta.pageId);
-    if (!known || meta.updatedAt > known.updatedAt) pages.set(meta.pageId, { ...meta, file, entry });
+    if (!known || meta.updatedAt > known.updatedAt) {
+      // Contenu gardé seulement s'il va être importé (évite un second téléchargement)
+      const record = records[meta.pageId];
+      const wanted = data && (!record || meta.updatedAt > record.syncedAt);
+      pages.set(meta.pageId, { ...meta, file, entry, data: wanted ? data : undefined });
+    }
   }
+  // Fichiers disparus du dossier : rien à retenir
+  for (const file of [...fileCache.keys()]) if (!listed.has(file)) fileCache.delete(file);
   return pages;
 }
 
 async function readRemoteScene(remote: RemotePage): Promise<any> {
-  const data = JSON.parse(await backend!.read(remote.entry));
+  const data = remote.data ?? JSON.parse(await backend!.read(remote.entry));
   return {
     elements: data.elements ?? [],
     appState: { viewBackgroundColor: data.appState?.viewBackgroundColor ?? "#ffffff" },
@@ -443,18 +505,16 @@ export function syncNow(): Promise<void> {
 
       // 3. Pages créées, modifiées ou renommées ici
       for (const page of index.pages) {
-        const record = records[page.id];
-        const file = fileNameFor(page);
         const signature = await localSignature(page);
-        if (record && record.signature === signature && record.file === file) continue;
+        if (isUpToDate(records[page.id], page, signature)) {
+          if (page.id === index.currentId) lastSignature = signature; // pas de réenvoi à l'affichage
+          continue;
+        }
 
         const scene =
           page.id === index.currentId ? await callBridge("getScene") : await readStoredScene(page.id);
         if (!scene) continue;
-        const updatedAt = Date.now();
-        await target.write(file, toExcalidrawFile(scene, page, updatedAt));
-        if (record && record.file.toLowerCase() !== file.toLowerCase()) await target.remove(record.file);
-        records[page.id] = { file, syncedAt: updatedAt, signature: sceneSignature(scene) };
+        await writePage(target, page, scene, records);
         if (page.id === index.currentId) lastSignature = records[page.id].signature;
       }
 
@@ -462,6 +522,7 @@ export function syncNow(): Promise<void> {
       for (const [id, record] of Object.entries(records)) {
         if (index.pages.some((p) => p.id === id)) continue;
         await target.remove(record.file);
+        fileCache.delete(record.file);
         delete records[id];
       }
 
@@ -472,6 +533,34 @@ export function syncNow(): Promise<void> {
       if (backend === target) handleError(err);
     }
     await updateMirror(false); // y compris les pages reçues d'un autre PC
+  });
+}
+
+// Après un simple changement de page : seule la page quittée peut avoir des
+// modifications pas encore envoyées (faites juste avant le clic). Rien à
+// télécharger : la relecture du dossier attend le prochain passage.
+export function pushPage(pageId: string): Promise<void> {
+  return runExclusive(async () => {
+    if (!canWrite()) return;
+    const target = backend!;
+    try {
+      const index = await getPagesIndex();
+      const records = await loadRecords();
+      // Page ouverte déjà à jour dans le dossier : pas de réenvoi à son affichage
+      const opened = index.pages.find((p) => p.id === index.currentId);
+      const live = await callBridge<string>("getSignature");
+      if (opened && isUpToDate(records[opened.id], opened, live)) lastSignature = live;
+
+      const page = index.pages.find((p) => p.id === pageId);
+      if (!page || page.id === index.currentId) return;
+      const scene = await readStoredScene(page.id);
+      if (!scene || isUpToDate(records[page.id], page, sceneSignature(scene))) return;
+      const updatedAt = await writePage(target, page, scene, records);
+      await saveRecords(records);
+      if (backend === target) setOk(updatedAt);
+    } catch (err) {
+      if (backend === target) handleError(err);
+    }
   });
 }
 
@@ -605,15 +694,13 @@ function saveCurrentPage(): Promise<void> {
       if (!page) return;
 
       const records = await loadRecords();
-      const file = fileNameFor(page);
-      const updatedAt = Date.now();
-      await target.write(file, toExcalidrawFile(scene, page, updatedAt));
-      const previous = records[page.id];
-      if (previous && previous.file.toLowerCase() !== file.toLowerCase()) await target.remove(previous.file);
-      records[page.id] = { file, syncedAt: updatedAt, signature };
-      await saveRecords(records);
+      // Page que l'on vient d'ouvrir (ou d'importer) : déjà à jour dans le dossier
+      if (!isUpToDate(records[page.id], page, signature)) {
+        const updatedAt = await writePage(target, page, scene, records);
+        await saveRecords(records);
+        if (backend === target) setOk(updatedAt);
+      }
       lastSignature = signature;
-      if (backend === target) setOk(updatedAt);
     } catch (err) {
       if (target && backend === target) handleError(err);
     } finally {
@@ -640,7 +727,9 @@ export function onSceneChanged(signature: string): void {
   if (stopped) return;
   const primary = !!backend && ["ok", "error", "paused"].includes(state.kind);
   if (!primary && !mirrorActive()) return;
-  if (signature === lastSignature && [...mirrorSignatures.values()].includes(signature)) return;
+  // Défilement, zoom, sélection : rien à enregistrer
+  const mirrored = !mirrorActive() || [...mirrorSignatures.values()].includes(signature);
+  if (signature === lastSignature && mirrored) return;
   lastLocalChange = Date.now();
   if (debounceTimer) clearTimeout(debounceTimer);
   debounceTimer = setTimeout(flush, DEBOUNCE_MS);

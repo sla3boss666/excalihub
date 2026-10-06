@@ -1,6 +1,6 @@
 # Privacy
 
-Excalihub (personal) has no server of its own and collects no data.
+ExcaliFree has no server of its own and collects no data.
 
 ## What stays on your device
 
@@ -8,6 +8,8 @@ Excalihub (personal) has no server of its own and collects no data.
   page storage.
 - Optional local copy: `.excalidraw` files in a folder you choose on your PC.
 - LaTeX rendering: done locally with the bundled MathJax.
+- PDF export: printed locally by Chrome. The `debugger` permission is used only for this, on the excalidraw.com tab,
+  during the export.
 
 ## What leaves your device
 

@@ -1,6 +1,7 @@
-// Service worker : seul contexte où chrome.identity et les appels réseau vers
-// Microsoft sont possibles. Le content script et la fenêtre de choix du dossier
-// lui envoient des messages « od:… ».
+// Service worker : seul contexte où chrome.identity, les appels réseau vers
+// Microsoft et chrome.debugger (export PDF) sont possibles. Le content script et
+// la fenêtre de choix du dossier lui envoient des messages « od:… » ;
+// « excalihub:print-pdf » pour l'export PDF.
 import {
   createFolder,
   getAccessToken,
@@ -69,6 +70,32 @@ chrome.runtime.onMessage.addListener((msg: Message, _sender, sendResponse) => {
           message: (err as Error)?.message ?? String(err),
         },
       }),
+  );
+  return true; // réponse asynchrone
+});
+
+// Export PDF : impression de l'onglet, mis en page par le content script (voir
+// pdf.ts), sans fenêtre d'impression, par le protocole DevTools. Chrome affiche
+// son bandeau « … a commencé à déboguer ce navigateur » le temps de l'export.
+async function printTabToPdf(tabId: number): Promise<string> {
+  const target = { tabId };
+  await chrome.debugger.attach(target, "1.3");
+  try {
+    const { data } = (await chrome.debugger.sendCommand(target, "Page.printToPDF", {
+      printBackground: true,
+      preferCSSPageSize: true, // taille et marges des pages : celles de la mise en page (@page)
+    })) as { data: string };
+    return data; // base64
+  } finally {
+    await chrome.debugger.detach(target).catch(() => {});
+  }
+}
+
+chrome.runtime.onMessage.addListener((msg: Message, sender, sendResponse) => {
+  if (msg?.type !== "excalihub:print-pdf" || sender.tab?.id === undefined) return false;
+  printTabToPdf(sender.tab.id).then(
+    (data) => sendResponse({ data }),
+    (err) => sendResponse({ error: (err as Error)?.message ?? String(err) }),
   );
   return true; // réponse asynchrone
 });

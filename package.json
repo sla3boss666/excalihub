@@ -1,14 +1,14 @@
 {
-  "name": "excalihub",
-  "version": "1.1.0",
-  "description": "A Chrome extension to save, organize, and manage Excalidraw drawings locally in the browser",
-  "author": "Aykut Sarac <https://x.com/aykutsarach>",
+  "name": "excalifree",
+  "version": "1.2.0",
+  "description": "Pages, frame slideshows, LaTeX formulas, auto-save and OneDrive sync for Excalidraw",
+  "author": "sla3boss666",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/AykutSarac/excalihub.git"
+    "url": "https://github.com/sla3boss666/excalihub.git"
   },
-  "homepage": "https://github.com/AykutSarac/excalihub",
+  "homepage": "https://github.com/sla3boss666/excalihub",
   "keywords": [
     "excalidraw",
     "chrome-extension",
@@ -19,7 +19,7 @@
   "scripts": {
     "build": "vite build",
     "watch": "vite build --watch",
-    "zip": "npm run build && mkdir -p release && zip -r release/excalihub.zip manifest.json src/content.css icons/ dist/ -x '*.DS_Store'"
+    "zip": "npm run build && node scripts/pack.mjs"
   },
   "devDependencies": {
     "@types/chrome": "^0.1.37",

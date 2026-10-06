@@ -2,12 +2,17 @@
 let callId = 0;
 
 export function callBridge<T = any>(method: string, ...args: any[]): Promise<T> {
+  return callBridgeWithTimeout<T>(3000, method, ...args);
+}
+
+// Opération longue (export des slides en SVG…) : délai d'attente choisi
+export function callBridgeWithTimeout<T = any>(timeoutMs: number, method: string, ...args: any[]): Promise<T> {
   return new Promise((resolve, reject) => {
     const id = ++callId;
     const timeout = setTimeout(() => {
       window.removeEventListener("message", handler);
       reject(new Error("Bridge timeout"));
-    }, 3000);
+    }, timeoutMs);
 
     const handler = (e: MessageEvent) => {
       if (e.data?.source !== "excalihub-bridge" || e.data.id !== id) return;
