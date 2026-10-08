@@ -24,6 +24,7 @@ import {
 } from "./backup";
 import { callBridge } from "./bridgeClient";
 import { canvasFilter, captureThumbnails } from "./capture";
+import { initChatTab, showChatInPanel } from "./chat";
 import {
   DEFAULT_SECTION,
   groupBySection,
@@ -48,6 +49,7 @@ import {
   TRANSITIONS,
 } from "./presentation";
 import { getExcalidrawTheme } from "./theme";
+import { showToast } from "./toast";
 
 // ── Réglage de la transition (mémorisé dans le localStorage de la page) ─
 const TRANSITION_KEY = "excalihub-pres-transition";
@@ -84,6 +86,9 @@ function applyTheme(): void {
   const isDark = getExcalidrawTheme() === "dark";
   document.getElementById("excalihub-panel")?.classList.toggle("theme-dark", isDark);
   document.getElementById("excalihub-toggle")?.classList.toggle("theme-dark", isDark);
+  // Bulle et fenêtre flottante du chat : hors du panneau, même thème
+  document.getElementById("excalihub-chat-bubble")?.classList.toggle("theme-dark", isDark);
+  document.getElementById("excalihub-chat-float")?.classList.toggle("theme-dark", isDark);
 }
 
 function observeTheme(): void {
@@ -122,26 +127,11 @@ const tablerIcon = (paths: string) =>
 const ICON_TAB_PAGES = `<path d="M15 3v4a1 1 0 0 0 1 1h4"/><path d="M18 17h-7a2 2 0 0 1 -2 -2v-10a2 2 0 0 1 2 -2h4l5 5v7a2 2 0 0 1 -2 2z"/><path d="M16 17v2a2 2 0 0 1 -2 2h-7a2 2 0 0 1 -2 -2v-10a2 2 0 0 1 2 -2h2"/>`;
 const ICON_TAB_SLIDES = `<path d="M3 4l18 0"/><path d="M4 4v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-10"/><path d="M12 16l0 4"/><path d="M9 20l6 0"/><path d="M8 12l3 -3l2 2l3 -3"/>`;
 const ICON_TAB_FORMULAS = `<path d="M3 19a2 2 0 0 0 2 2c2 0 2 -4 3 -9s1 -9 3 -9a2 2 0 0 1 2 2"/><path d="M5 12h6"/><path d="M15 12l6 6"/><path d="M15 18l6 -6"/>`;
+const ICON_TAB_CHAT = `<path d="M8 9h8"/><path d="M8 13h6"/><path d="M18 4a3 3 0 0 1 3 3v8a3 3 0 0 1 -3 3h-5l-5 3v-3h-2a3 3 0 0 1 -3 -3v-8a3 3 0 0 1 3 -3h12z"/>`;
 const ICON_CLOSE_PANEL = `<svg aria-hidden="true" focusable="false" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5 5 15M5 5l10 10"/></svg>`;
 const ICON_REFRESH = `<polyline points="23 4 23 10 17 10"/><path d="M20.5 15a9 9 0 1 1-2.1-9.4L23 10"/>`;
 const ICON_DOWNLOAD = `<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>`;
 const ICON_STEPS = `<line x1="10" y1="6" x2="21" y2="6"/><line x1="10" y1="12" x2="21" y2="12"/><line x1="10" y1="18" x2="21" y2="18"/><path d="M4 6h1v4"/><path d="M4 10h2"/><path d="M6 18H4c0-1 2-2 2-3s-1-1.5-2-1"/>`;
-
-// ── Message temporaire (erreurs de formule…) ─────────────────────────
-let toastTimer: ReturnType<typeof setTimeout> | null = null;
-
-function showToast(message: string): void {
-  let toast = document.getElementById("excalihub-toast");
-  if (!toast) {
-    toast = document.createElement("div");
-    toast.id = "excalihub-toast";
-    document.body.appendChild(toast);
-  }
-  toast.textContent = message;
-  toast.classList.add("show");
-  if (toastTimer) clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => toast!.classList.remove("show"), 6000);
-}
 
 // ── Formules LaTeX ────────────────────────────────────────────────────
 // Le bridge signale les textes contenant des $ ; on les rend ici avec MathJax
@@ -431,7 +421,7 @@ function setLatexEnabled(enabled: boolean): void {
 }
 
 // ── Onglets ───────────────────────────────────────────────────────────
-type Tab = "pages" | "slides" | "latex";
+type Tab = "pages" | "slides" | "latex" | "chat";
 let activeTab: Tab = "slides";
 
 function showTab(tab: Tab): void {
@@ -451,6 +441,7 @@ function showTab(tab: Tab): void {
   }
   stopPresPolling();
   if (tab === "pages") renderPages();
+  if (tab === "chat") showChatInPanel();
 }
 
 // Numéros d'étape sur le dessin et sélection suivie : onglet Slides ouvert seulement
@@ -1307,6 +1298,7 @@ function createPanel(): void {
         <button type="button" class="excalihub-tab" data-tab="pages" role="tab" title="Pages" aria-label="Pages">${tablerIcon(ICON_TAB_PAGES)}</button>
         <button type="button" class="excalihub-tab" data-tab="slides" role="tab" title="Slides" aria-label="Slides">${tablerIcon(ICON_TAB_SLIDES)}</button>
         <button type="button" class="excalihub-tab" data-tab="latex" role="tab" title="Formulas" aria-label="Formulas">${tablerIcon(ICON_TAB_FORMULAS)}</button>
+        <button type="button" class="excalihub-tab" data-tab="chat" role="tab" title="Chat" aria-label="Chat">${tablerIcon(ICON_TAB_CHAT)}</button>
       </div>
       <button type="button" class="excalihub-close" id="excalihub-close" title="Close (Ctrl+X)" aria-label="Close">${ICON_CLOSE_PANEL}</button>
     </div>
@@ -1377,6 +1369,8 @@ function createPanel(): void {
         </div>
       </div>
     </div>
+
+    <div class="excalihub-tab-view" data-view="chat" hidden><div id="excalihub-chat-slot"></div></div>
   `;
   document.body.appendChild(panel);
 
@@ -1429,6 +1423,7 @@ function createPanel(): void {
   initSlideList();
   initStepsBox();
   initBackupBox();
+  void initChatTab();
   applyTheme();
   observeTheme();
 }

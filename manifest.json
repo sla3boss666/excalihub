@@ -13,7 +13,10 @@
     "https://login.microsoftonline.com/*",
     "https://api.onedrive.com/*",
     "https://*.1drv.com/*",
-    "https://*.microsoftpersonalcontent.com/*"
+    "https://*.microsoftpersonalcontent.com/*",
+    "https://api.anthropic.com/*",
+    "https://api.openai.com/*",
+    "https://openrouter.ai/*"
   ],
   "background": {
     "service_worker": "dist/background.js",

@@ -1,7 +1,9 @@
 // Service worker : seul contexte où chrome.identity, les appels réseau vers
 // Microsoft et chrome.debugger (export PDF) sont possibles. Le content script et
 // la fenêtre de choix du dossier lui envoient des messages « od:… » ;
-// « excalihub:print-pdf » pour l'export PDF.
+// « excalihub:print-pdf » pour l'export PDF. Le chat (Claude / ChatGPT) passe
+// par le Port « excalihub-chat » (voir chatApi.ts).
+import { initChat } from "./chatApi";
 import {
   createFolder,
   getAccessToken,
@@ -106,3 +108,5 @@ chrome.commands.onCommand.addListener((command, tab) => {
   if (command !== "toggle-panel" || !tab?.id) return;
   chrome.tabs.sendMessage(tab.id, { type: "excalihub:toggle-panel" }).catch(() => {});
 });
+
+initChat();
