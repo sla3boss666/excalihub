@@ -4,20 +4,94 @@
 // Port « excalihub-chat » et reçoit la réponse en continu (flux SSE).
 // fetch direct plutôt que les SDK : leurs import() dynamiques sont interdits
 // dans un service worker MV3.
-import type { ChatPortRequest, ChatPortResponse, ChatProvider, ChatRequest } from "./chatShared";
+import type { ChatMessage, ChatPortRequest, ChatPortResponse, ChatProvider, ChatRequest } from "./chatShared";
 
+// Le panneau rend le Markdown et le LaTeX (chatMarkdown.ts) : on le dit au
+// modèle pour qu'il formate ses réponses en conséquence
 const SYSTEM_PROMPT =
-  "You are a helpful assistant in a side panel of the Excalidraw whiteboard. Answer concisely.";
+  "You are a helpful assistant in a side panel of the Excalidraw whiteboard. Answer concisely. " +
+  "Format answers in Markdown (headings, lists, tables, fenced code blocks). " +
+  "Write math in LaTeX: $…$ inline and $$…$$ on its own line for display equations. " +
+  "Never wrap the whole answer in a code fence, and do not include hidden reasoning or <think> tags in the answer. " +
+  "You may be given a description of the user's current board page, and messages may include the elements " +
+  "the user had selected (as text, and as an image when available). Use them to answer questions about the drawing; " +
+  "when the question is unrelated to the board, just answer it.";
+
+// Prompt système du moment : consigne fixe + description de la page
+function systemPrompt(request: ChatRequest): string {
+  return request.context ? `${SYSTEM_PROMPT}\n\n${request.context}` : SYSTEM_PROMPT;
+}
+
+// Texte d'un message utilisateur, sélection jointe comprise
+function userText(msg: ChatMessage): string {
+  if (!msg.attachment) return msg.content;
+  return `${msg.content}\n\n[Elements selected on the board when asking this]\n${msg.attachment.text}`;
+}
+
+function parseDataUrl(url: string): { mediaType: string; data: string } | null {
+  const m = /^data:([^;,]+);base64,(.+)$/s.exec(url);
+  return m ? { mediaType: m[1], data: m[2] } : null;
+}
+
+// Messages au format Anthropic : l'image (capture de la sélection) précède le texte
+function claudeMessages(messages: ChatMessage[]): unknown[] {
+  return messages.map((msg) => {
+    if (msg.role === "assistant") return { role: "assistant", content: msg.content };
+    const image = msg.image ? parseDataUrl(msg.image) : null;
+    if (!image) return { role: "user", content: userText(msg) };
+    return {
+      role: "user",
+      content: [
+        { type: "image", source: { type: "base64", media_type: image.mediaType, data: image.data } },
+        { type: "text", text: userText(msg) },
+      ],
+    };
+  });
+}
+
+// Messages au format OpenAI (chat/completions)
+function openAIMessages(messages: ChatMessage[]): unknown[] {
+  return messages.map((msg) => {
+    if (msg.role === "assistant") return { role: "assistant", content: msg.content };
+    if (!msg.image) return { role: "user", content: userText(msg) };
+    return {
+      role: "user",
+      content: [
+        { type: "image_url", image_url: { url: msg.image } },
+        { type: "text", text: userText(msg) },
+      ],
+    };
+  });
+}
 const MAX_TOKENS = 16000;
 
 // Fournisseurs parlant le protocole « chat/completions » d'OpenAI ;
 // Claude (API Anthropic) est traité à part
-const OPENAI_COMPAT: Partial<Record<ChatProvider, { name: string; endpoint: string }>> = {
-  openai: { name: "OpenAI", endpoint: "https://api.openai.com/v1/chat/completions" },
-  openrouter: { name: "OpenRouter", endpoint: "https://openrouter.ai/api/v1/chat/completions" },
+// `extra` : paramètres propres au fournisseur. OpenAI n'accepte plus
+// max_tokens sur GPT-5 (max_completion_tokens) ; OpenRouter borne la réponse
+// et freine la répétition (les modèles gratuits dégénèrent parfois en boucle)
+const OPENAI_COMPAT: Partial<Record<ChatProvider, { name: string; endpoint: string; extra: Record<string, unknown> }>> = {
+  openai: {
+    name: "OpenAI",
+    endpoint: "https://api.openai.com/v1/chat/completions",
+    extra: { max_completion_tokens: MAX_TOKENS },
+  },
+  openrouter: {
+    name: "OpenRouter",
+    endpoint: "https://openrouter.ai/api/v1/chat/completions",
+    extra: { max_tokens: MAX_TOKENS, repetition_penalty: 1.05 },
+  },
 };
 
 class ChatError extends Error {}
+
+// Erreur d'un fournisseur refusant une image en entrée, par exemple
+// « No endpoints found that support image input » (OpenRouter) ou
+// « Invalid content type. image_url is only supported by certain models » (OpenAI)
+function rejectsImages(err: unknown): boolean {
+  if (!(err instanceof ChatError)) return false;
+  return /image|vision|multimodal|modalit|content type|input type/i.test(err.message);
+}
 
 // Lit un flux SSE et passe à onData le contenu de chaque ligne « data: … »
 async function readSSE(body: ReadableStream<Uint8Array>, onData: (payload: string) => void): Promise<void> {
@@ -59,8 +133,8 @@ async function streamClaude(
     body: JSON.stringify({
       model: request.model,
       max_tokens: MAX_TOKENS,
-      system: SYSTEM_PROMPT,
-      messages: request.messages,
+      system: systemPrompt(request),
+      messages: claudeMessages(request.messages),
       stream: true,
       ...(withFallback ? { fallbacks: "default" } : {}),
     }),
@@ -101,6 +175,7 @@ async function streamClaude(
 async function streamOpenAICompatible(
   providerName: string,
   endpoint: string,
+  extra: Record<string, unknown>,
   request: ChatRequest,
   signal: AbortSignal,
   onText: (text: string) => void,
@@ -113,8 +188,9 @@ async function streamOpenAICompatible(
     },
     body: JSON.stringify({
       model: request.model,
-      messages: [{ role: "system", content: SYSTEM_PROMPT }, ...request.messages],
+      messages: [{ role: "system", content: systemPrompt(request) }, ...openAIMessages(request.messages)],
       stream: true,
+      ...extra,
     }),
     signal,
   });
@@ -155,12 +231,27 @@ async function run(request: ChatRequest, signal: AbortSignal, port: chrome.runti
   };
   try {
     if (!request.key) throw new ChatError("No API key configured. Add one in the chat settings.");
+    let streamed = false;
     const onText = (text: string) => {
+      streamed = true;
       if (!signal.aborted) post({ type: "chunk", text });
     };
-    const compat = OPENAI_COMPAT[request.provider];
-    if (compat) await streamOpenAICompatible(compat.name, compat.endpoint, request, signal, onText);
-    else await streamClaude(request, signal, onText);
+    const stream = (req: ChatRequest) => {
+      const compat = OPENAI_COMPAT[req.provider];
+      return compat
+        ? streamOpenAICompatible(compat.name, compat.endpoint, compat.extra, req, signal, onText)
+        : streamClaude(req, signal, onText);
+    };
+    try {
+      await stream(request);
+    } catch (err) {
+      // Modèle qui ne voit pas les images (surtout les modèles gratuits
+      // d'OpenRouter) : on renvoie la même question sans les captures, la
+      // sélection restant décrite en texte
+      if (!rejectsImages(err) || streamed || signal.aborted || !request.messages.some((m) => m.image)) throw err;
+      post({ type: "chunk", text: "*This model can't see images: answering from the text description of the selection.*\n\n" });
+      await stream({ ...request, messages: request.messages.map(({ image: _image, ...m }) => m) });
+    }
     post({ type: "done" });
   } catch (err) {
     if (signal.aborted) {

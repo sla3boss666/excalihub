@@ -1368,6 +1368,92 @@ interface BridgeMessage {
     return { frames, background };
   }
 
+  // ── Chat : contexte du dessin et capture de la sélection ─────────────
+  // Version allégée des éléments (ni points, ni fichiers) : de quoi décrire
+  // la page au modèle. Les éléments masqués par le diaporama sont inclus.
+  function liteElements(api: ExcalidrawAPI): { elements: Record<string, any>[]; selectedIds: string[] } {
+    const s = api.getAppState();
+    const elements = cleanScene([...(api.getSceneElements?.() ?? [])]).filter((el) => !el.isDeleted);
+    const ids = new Set(elements.map((el) => el.id));
+    const lite = elements.map((el) => {
+      const latex = el.customData?.excalihubLatex?.text;
+      const out: Record<string, any> = {
+        id: el.id,
+        type: el.type,
+        x: Math.round(el.x),
+        y: Math.round(el.y),
+        width: Math.round(el.width),
+        height: Math.round(el.height),
+      };
+      if (el.type === "text") out.text = el.originalText ?? el.text ?? "";
+      if (latex) out.latex = latex.originalText ?? latex.text ?? "";
+      if (isFrame(el) && el.name) out.name = el.name;
+      if (el.frameId && ids.has(el.frameId)) out.frameId = el.frameId;
+      if (el.containerId && ids.has(el.containerId)) out.containerId = el.containerId;
+      if (el.link) out.link = el.link;
+      if (el.startBinding?.elementId && ids.has(el.startBinding.elementId)) out.from = el.startBinding.elementId;
+      if (el.endBinding?.elementId && ids.has(el.endBinding.elementId)) out.to = el.endBinding.elementId;
+      if (el.strokeColor && el.strokeColor !== "#1e1e1e") out.stroke = el.strokeColor;
+      if (el.backgroundColor && el.backgroundColor !== "transparent") out.fill = el.backgroundColor;
+      return out;
+    });
+    const selectedIds = elements.filter((el) => s.selectedElementIds?.[el.id]).map((el) => el.id);
+    return { elements: lite, selectedIds };
+  }
+
+  // Sélection courante, en bref (interrogé souvent par le chat : léger).
+  // Le texte lié à un conteneur sélectionné n'est pas compté deux fois.
+  function selectionSummary(api: ExcalidrawAPI): { count: number; kinds: Record<string, number>; signature: string } {
+    const sel = api.getAppState().selectedElementIds ?? {};
+    const elements = (api.getSceneElements?.() ?? []).filter(
+      (el) => sel[el.id] && !el.isDeleted && !isMorphCopy(el) && !(el.containerId && sel[el.containerId]),
+    );
+    const kinds: Record<string, number> = {};
+    for (const el of elements) {
+      const kind = el.customData?.excalihubLatex ? "formula" : el.type;
+      kinds[kind] = (kinds[kind] ?? 0) + 1;
+    }
+    return {
+      count: elements.length,
+      kinds,
+      signature: elements.map((el) => `${el.id}:${el.version}`).sort().join(","),
+    };
+  }
+
+  // SVG de la sélection (avec les textes liés et le contenu des frames
+  // sélectionnées), comme « Copier en SVG » ; null si rien n'est sélectionné
+  async function exportSelectionSvg(api: ExcalidrawAPI): Promise<{ svg: string; width: number; height: number } | null> {
+    const app = findApp();
+    if (!app) throw new Error("Excalidraw not found");
+    const state = api.getAppState();
+    const sel = state.selectedElementIds ?? {};
+    const elements = cleanScene(allElements(api));
+    const ids: Record<string, true> = {};
+    for (const el of elements) {
+      if (el.isDeleted) continue;
+      if (sel[el.id] || (el.containerId && sel[el.containerId]) || (el.frameId && sel[el.frameId])) ids[el.id] = true;
+    }
+    const chosen = elements.filter((el) => ids[el.id]);
+    if (chosen.length === 0) return null;
+
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const el of chosen) {
+      minX = Math.min(minX, el.x);
+      minY = Math.min(minY, el.y);
+      maxX = Math.max(maxX, el.x + el.width);
+      maxY = Math.max(maxY, el.y + el.height);
+    }
+    const svg = await copyAsSvg(app, elements, {
+      ...state,
+      selectedElementIds: ids,
+      exportBackground: true,
+      exportWithDarkMode: false,
+      exportEmbedScene: false,
+      exportScale: 1,
+    });
+    return { svg, width: maxX - minX, height: maxY - minY };
+  }
+
   window.addEventListener("message", function (e: MessageEvent) {
     if (e.source !== window) return;
     if (!e.data || e.data.source !== "excalihub-content") return;
@@ -1460,6 +1546,16 @@ interface BridgeMessage {
       } else if (method === "exportFramePngs") {
         const { frameIds, maxWidth = 512 } = args[0] as { frameIds: string[]; maxWidth?: number };
         exportFramePngs(api, frameIds, maxWidth).then(
+          (result) => window.postMessage({ source: "excalihub-bridge", id, result }),
+          (err: unknown) =>
+            window.postMessage({ source: "excalihub-bridge", id, error: err instanceof Error ? err.message : String(err) }),
+        );
+      } else if (method === "getElementsLite") {
+        window.postMessage({ source: "excalihub-bridge", id, result: liteElements(api) });
+      } else if (method === "getSelectionSummary") {
+        window.postMessage({ source: "excalihub-bridge", id, result: selectionSummary(api) });
+      } else if (method === "exportSelectionSvg") {
+        exportSelectionSvg(api).then(
           (result) => window.postMessage({ source: "excalihub-bridge", id, result }),
           (err: unknown) =>
             window.postMessage({ source: "excalihub-bridge", id, error: err instanceof Error ? err.message : String(err) }),

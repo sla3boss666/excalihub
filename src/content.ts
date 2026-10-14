@@ -24,7 +24,7 @@ import {
 } from "./backup";
 import { callBridge } from "./bridgeClient";
 import { renderThumbnails } from "./capture";
-import { CHAT_TAB_HTML, focusChatInput, initChatTab } from "./chat";
+import { initChatTab, showChatInPanel } from "./chat";
 import {
   DEFAULT_SECTION,
   groupBySection,
@@ -86,6 +86,9 @@ function applyTheme(): void {
   const isDark = getExcalidrawTheme() === "dark";
   document.getElementById("excalihub-panel")?.classList.toggle("theme-dark", isDark);
   document.getElementById("excalihub-toggle")?.classList.toggle("theme-dark", isDark);
+  // Bulle et fenêtre flottante du chat : hors du panneau, même thème
+  document.getElementById("excalihub-chat-bubble")?.classList.toggle("theme-dark", isDark);
+  document.getElementById("excalihub-chat-float")?.classList.toggle("theme-dark", isDark);
 }
 
 function observeTheme(): void {
@@ -438,7 +441,7 @@ function showTab(tab: Tab): void {
   }
   stopPresPolling();
   if (tab === "pages") renderPages();
-  if (tab === "chat") focusChatInput();
+  if (tab === "chat") showChatInPanel();
 }
 
 // Numéros d'étape sur le dessin et sélection suivie : onglet Slides ouvert seulement
@@ -1367,7 +1370,7 @@ function createPanel(): void {
       </div>
     </div>
 
-    <div class="excalihub-tab-view" data-view="chat" hidden>${CHAT_TAB_HTML}</div>
+    <div class="excalihub-tab-view" data-view="chat" hidden><div id="excalihub-chat-slot"></div></div>
   `;
   document.body.appendChild(panel);
 
