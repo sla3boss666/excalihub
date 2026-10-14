@@ -23,8 +23,8 @@ import {
   syncNow,
 } from "./backup";
 import { callBridge } from "./bridgeClient";
-import { canvasFilter, captureThumbnails } from "./capture";
-import { initChatTab, showChatInPanel } from "./chat";
+import { renderThumbnails } from "./capture";
+import { CHAT_TAB_HTML, focusChatInput, initChatTab } from "./chat";
 import {
   DEFAULT_SECTION,
   groupBySection,
@@ -86,9 +86,6 @@ function applyTheme(): void {
   const isDark = getExcalidrawTheme() === "dark";
   document.getElementById("excalihub-panel")?.classList.toggle("theme-dark", isDark);
   document.getElementById("excalihub-toggle")?.classList.toggle("theme-dark", isDark);
-  // Bulle et fenêtre flottante du chat : hors du panneau, même thème
-  document.getElementById("excalihub-chat-bubble")?.classList.toggle("theme-dark", isDark);
-  document.getElementById("excalihub-chat-float")?.classList.toggle("theme-dark", isDark);
 }
 
 function observeTheme(): void {
@@ -441,7 +438,7 @@ function showTab(tab: Tab): void {
   }
   stopPresPolling();
   if (tab === "pages") renderPages();
-  if (tab === "chat") showChatInPanel();
+  if (tab === "chat") focusChatInput();
 }
 
 // Numéros d'étape sur le dessin et sélection suivie : onglet Slides ouvert seulement
@@ -653,8 +650,9 @@ function ensureThumbnails(): void {
   if (thumbnailsStale()) refreshThumbnails();
 }
 
-// Aperçus de la page affichée ; ceux des autres pages viennent de leur
-// dernier affichage (conservés dans le stockage de l'extension)
+// Aperçus de la page affichée (export PNG d'Excalidraw, voir capture.ts) ;
+// ceux des autres pages viennent de leur dernier affichage (conservés dans
+// le stockage de l'extension)
 async function refreshThumbnails(): Promise<void> {
   const current = currentPageSlides();
   if (capturing || current.length === 0) return;
@@ -663,12 +661,13 @@ async function refreshThumbnails(): Promise<void> {
   refreshBtn?.classList.add("spinning");
   try {
     const version = getSceneVersion();
-    const captured = await captureThumbnails(current);
+    const captured = await renderThumbnails(current);
     for (const [id, canvas] of captured) thumbnails.set(id, canvas);
     thumbsVersion = version;
     storeThumbnails(captured, new Set(slides.map((s) => s.id))).catch(() => {});
-  } catch {
-    // Excalidraw inaccessible : les slides restent sans aperçu
+  } catch (err) {
+    // Excalidraw inaccessible ou export refusé : les slides restent sans aperçu
+    showToast(`Previews unavailable: ${(err as Error)?.message ?? String(err)}`);
   } finally {
     capturing = false;
     refreshBtn?.classList.remove("spinning");
@@ -712,7 +711,7 @@ function stopPresPolling(): void {
 const ICON_CHEVRON = `<polyline points="6 9 12 15 18 9"/>`;
 const ICON_SECTION = `<line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="14" y2="12"/><line x1="4" y1="18" x2="14" y2="18"/>`;
 
-function buildSlideItemEl(slide: Slide, index: number, filter: string, showPage: boolean): HTMLElement {
+function buildSlideItemEl(slide: Slide, index: number, showPage: boolean): HTMLElement {
   const item = document.createElement("div");
   item.className = `excalihub-pres-slide-item${slide.isCurrentPage ? "" : " other-page"}`;
   item.dataset.index = String(index);
@@ -744,7 +743,6 @@ function buildSlideItemEl(slide: Slide, index: number, filter: string, showPage:
     copy.width = cached.width;
     copy.height = cached.height;
     copy.getContext("2d")?.drawImage(cached, 0, 0);
-    copy.style.filter = filter;
     box.appendChild(copy);
   } else {
     box.classList.add("empty");
@@ -793,13 +791,12 @@ function rebuildSlideItems(): void {
     return;
   }
 
-  const filter = canvasFilter();
   const showPage = new Set(slides.map((s) => s.pageId)).size > 1;
   const children: HTMLElement[] = [];
   for (const group of groupBySection(slides)) {
     if (group.section) children.push(buildSectionHeader(group));
     if (group.section && collapsed.has(group.section.id)) continue;
-    group.slides.forEach((slide, i) => children.push(buildSlideItemEl(slide, group.start + i, filter, showPage)));
+    group.slides.forEach((slide, i) => children.push(buildSlideItemEl(slide, group.start + i, showPage)));
   }
   container.replaceChildren(...children);
 }
@@ -1370,7 +1367,7 @@ function createPanel(): void {
       </div>
     </div>
 
-    <div class="excalihub-tab-view" data-view="chat" hidden><div id="excalihub-chat-slot"></div></div>
+    <div class="excalihub-tab-view" data-view="chat" hidden>${CHAT_TAB_HTML}</div>
   `;
   document.body.appendChild(panel);
 
@@ -1423,7 +1420,7 @@ function createPanel(): void {
   initSlideList();
   initStepsBox();
   initBackupBox();
-  void initChatTab();
+  initChatTab().catch((err) => showToast(`Chat unavailable: ${(err as Error)?.message ?? String(err)}`));
   applyTheme();
   observeTheme();
 }

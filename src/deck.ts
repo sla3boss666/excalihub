@@ -5,7 +5,7 @@
 import { runExclusive, syncNow } from "./backup";
 import { callBridge } from "./bridgeClient";
 import { framesFromElements, readSceneElements, SceneFrame, SectionRef } from "./frames";
-import { getPagesIndex, readStoredScene, storeScene } from "./pages";
+import { getPagesIndex, readStoredScene, storedSceneFrames, storeScene } from "./pages";
 
 export interface Slide extends SceneFrame {
   pageId: string;
@@ -27,8 +27,9 @@ export async function loadSlides(): Promise<Slide[]> {
   const slides: (Slide & { rank: number })[] = [];
   for (const [pageRank, page] of index.pages.entries()) {
     const isCurrentPage = page.id === index.currentId;
-    const elements = isCurrentPage ? readSceneElements() : ((await readStoredScene(page.id))?.elements ?? []);
-    framesFromElements(elements).forEach((frame, i) =>
+    // Pages non affichées : frames gardées en mémoire, sans relire la scène (images comprises)
+    const frames = isCurrentPage ? framesFromElements(readSceneElements()) : await storedSceneFrames(page.id);
+    frames.forEach((frame, i) =>
       slides.push({
         ...frame,
         pageId: page.id,

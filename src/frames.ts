@@ -35,16 +35,26 @@ export interface FrameView {
   rect: ScreenRect; // position du frame à l'écran une fois cadré
 }
 
-// localStorage est partagé avec la page : Excalidraw y garde la scène courante
+// localStorage est partagé avec la page : Excalidraw y garde la scène courante.
+// Relue souvent (sondage de l'onglet Slides, fraîcheur des aperçus) : analysée
+// une seule fois tant que le texte n'a pas changé. Résultat à ne pas modifier.
+let parsedRaw: string | null = null;
+let parsedElements: any[] = [];
+
 export function readSceneElements(): any[] {
   const raw = localStorage.getItem("excalidraw");
   if (!raw) return [];
+  if (raw === parsedRaw) return parsedElements;
+  let elements: any[] = [];
   try {
-    const elements = JSON.parse(raw);
-    return Array.isArray(elements) ? elements : [];
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) elements = parsed;
   } catch {
-    return [];
+    // Contenu illisible : scène vide
   }
+  parsedRaw = raw;
+  parsedElements = elements;
+  return elements;
 }
 
 export function getFramesFromScene(): SceneFrame[] {

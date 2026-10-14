@@ -19,6 +19,8 @@ import {
   readStoredScene,
   removeStoredScene,
   savePagesIndex,
+  sceneSignature,
+  storedSceneSignature,
   storeScene,
 } from "./pages";
 
@@ -217,13 +219,6 @@ export function isQueueBusy(): boolean {
   return queueLength > 0;
 }
 
-// Même calcul que le bridge (nombre d'éléments, somme des versions, fond)
-function sceneSignature(scene: any): string {
-  const elements: any[] = scene?.elements ?? [];
-  const versions = elements.reduce((sum, el) => sum + (el.version ?? 0), 0);
-  return `${elements.length}:${versions}:${scene?.appState?.viewBackgroundColor}`;
-}
-
 // Format .excalidraw standard (se rouvre dans Excalidraw : Ctrl+O ou glisser-déposer)
 function toExcalidrawFile(scene: any, page: PageInfo, updatedAt: number): string {
   return JSON.stringify(
@@ -418,11 +413,10 @@ export function syncNow(): Promise<void> {
       let liveSignature: string = await callBridge("getSignature");
       let reloadCurrent: any = null; // nouvelle scène à afficher
 
-      // Signature actuelle d'une page (canevas pour la page affichée)
+      // Signature actuelle d'une page (canevas pour la page affichée ; les
+      // autres sans relire leur contenu, voir pages.ts)
       const localSignature = async (page: PageInfo) =>
-        page.id === index.currentId
-          ? liveSignature
-          : sceneSignature((await readStoredScene(page.id)) ?? EMPTY_SCENE);
+        page.id === index.currentId ? liveSignature : await storedSceneSignature(page.id);
 
       // Nouveau PC : la page vide créée d'office s'efface devant les pages du dossier
       const only = index.pages.length === 1 ? index.pages[0] : null;
@@ -604,8 +598,13 @@ async function updateMirror(onlyCurrent: boolean, currentScene?: any): Promise<v
       names.add(file.toLowerCase());
       if (onlyCurrent && page.id !== index.currentId) continue;
       const isCurrent = page.id === index.currentId;
-      // Page affichée : signature légère d'abord, scène complète seulement si besoin
-      const quick = isCurrent && !currentScene ? await callBridge<string>("getSignature") : null;
+      // Signature légère d'abord (canevas, ou cache des pages enregistrées) :
+      // la scène complète n'est relue que s'il y a quelque chose à écrire
+      const quick = isCurrent
+        ? currentScene
+          ? null
+          : await callBridge<string>("getSignature")
+        : await storedSceneSignature(page.id);
       if (quick && mirrorSignatures.get(file) === quick) continue;
       const scene = isCurrent ? (currentScene ?? (await callBridge("getScene"))) : await readStoredScene(page.id);
       if (!scene) continue;

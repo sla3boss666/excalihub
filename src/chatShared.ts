@@ -15,7 +15,6 @@ export interface ChatSettings {
   provider: ChatProvider;
   keys: Record<ChatProvider, string>;
   models: Record<ChatProvider, string>;
-  float: boolean; // bulle de chat flottante sur le canevas
 }
 
 // Tout ce qu'il faut pour une requête : le service worker ne lit rien d'autre

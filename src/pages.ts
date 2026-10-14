@@ -2,9 +2,11 @@
 // La page courante vit dans le canevas (sauvegardé par Excalidraw lui-même) ;
 // les autres sont rangées dans chrome.storage.local (sur ce PC uniquement).
 import { callBridge } from "./bridgeClient";
+import { framesFromElements, SceneFrame } from "./frames";
 
 const INDEX_KEY = "excalihub_pages";
-const pageKey = (id: string) => `excalihub_page_${id}`;
+const PAGE_PREFIX = "excalihub_page_";
+const pageKey = (id: string) => `${PAGE_PREFIX}${id}`;
 
 export interface PageInfo {
   id: string;
@@ -22,6 +24,13 @@ export const EMPTY_SCENE = {
   appState: { scrollX: 0, scrollY: 0, zoom: { value: 1 } },
   files: {},
 };
+
+// Même calcul que le bridge (nombre d'éléments, somme des versions, fond)
+export function sceneSignature(scene: any): string {
+  const elements: any[] = scene?.elements ?? [];
+  const versions = elements.reduce((sum, el) => sum + (el.version ?? 0), 0);
+  return `${elements.length}:${versions}:${scene?.appState?.viewBackgroundColor}`;
+}
 
 // Dans une session collaborative, charger une page l'enverrait aux participants
 export function isCollabSession(): boolean {
@@ -44,17 +53,68 @@ export async function getPagesIndex(): Promise<PagesIndex> {
   return created;
 }
 
+// ── Pages enregistrées : ce qu'on en sait sans les relire ────────────
+// Une page enregistrée peut peser des Mo (images). La synchro (toutes les
+// 20 s) et l'onglet Slides n'ont besoin que de sa signature et de ses frames :
+// calculées à la lecture ou à l'écriture, gardées tant que la page ne change
+// pas — ici, ou dans un autre onglet (chrome.storage.onChanged).
+interface StoredMeta {
+  signature: string;
+  frames: SceneFrame[];
+}
+
+const metaCache = new Map<string, StoredMeta>();
+
+function remember(id: string, scene: any | null): StoredMeta {
+  const meta = {
+    signature: sceneSignature(scene ?? EMPTY_SCENE),
+    frames: framesFromElements(scene?.elements ?? []),
+  };
+  metaCache.set(id, meta);
+  return meta;
+}
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local") return;
+  for (const [key, change] of Object.entries(changes)) {
+    if (!key.startsWith(PAGE_PREFIX)) continue;
+    const id = key.slice(PAGE_PREFIX.length);
+    if (change.newValue === undefined) metaCache.delete(id);
+    else remember(id, change.newValue);
+  }
+});
+
+async function getStored(id: string): Promise<any | null> {
+  const result = await chrome.storage.local.get(pageKey(id));
+  return result[pageKey(id)] ?? null;
+}
+
+async function storedMeta(id: string): Promise<StoredMeta> {
+  return metaCache.get(id) ?? remember(id, await getStored(id));
+}
+
+// Signature d'une page non affichée (celle d'une scène vide si jamais enregistrée)
+export async function storedSceneSignature(id: string): Promise<string> {
+  return (await storedMeta(id)).signature;
+}
+
+// Frames (slides) d'une page non affichée
+export async function storedSceneFrames(id: string): Promise<SceneFrame[]> {
+  return (await storedMeta(id)).frames.map((frame) => ({ ...frame }));
+}
+
 async function saveCurrentPage(index: PagesIndex): Promise<void> {
   const scene = await callBridge("getScene");
-  await chrome.storage.local.set({ [pageKey(index.currentId)]: scene });
+  await storeScene(index.currentId, scene);
   const page = index.pages.find((p) => p.id === index.currentId);
   if (page) page.updatedAt = Date.now();
 }
 
 // Contenu enregistré d'une page non affichée (null si jamais enregistrée)
 export async function readStoredScene(id: string): Promise<any | null> {
-  const result = await chrome.storage.local.get(pageKey(id));
-  return result[pageKey(id)] ?? null;
+  const scene = await getStored(id);
+  remember(id, scene);
+  return scene;
 }
 
 // ── Accès bas niveau pour la synchronisation (backup.ts) ─────────────
@@ -62,15 +122,16 @@ export const savePagesIndex = writeIndex;
 
 export async function storeScene(id: string, scene: unknown): Promise<void> {
   await chrome.storage.local.set({ [pageKey(id)]: scene });
+  remember(id, scene);
 }
 
 export async function removeStoredScene(id: string): Promise<void> {
   await chrome.storage.local.remove(pageKey(id));
+  metaCache.delete(id);
 }
 
 async function loadPage(id: string): Promise<void> {
-  const result = await chrome.storage.local.get(pageKey(id));
-  await callBridge("loadScene", result[pageKey(id)] ?? EMPTY_SCENE);
+  await callBridge("loadScene", (await readStoredScene(id)) ?? EMPTY_SCENE);
 }
 
 export async function switchToPage(id: string): Promise<void> {
@@ -125,5 +186,5 @@ export async function deletePage(id: string): Promise<void> {
 
   index.pages.splice(position, 1);
   await writeIndex(index);
-  await chrome.storage.local.remove(pageKey(id));
+  await removeStoredScene(id);
 }

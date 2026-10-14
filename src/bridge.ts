@@ -1279,6 +1279,57 @@ interface BridgeMessage {
     return captured.svg;
   }
 
+  // Image PNG par l'action « Copier en PNG » d'Excalidraw : même rendu que le
+  // canevas (polices, images, thème), sans bouger la caméra. L'action écrit
+  // dans le presse-papier : on intercepte l'image, méthode d'origine rétablie ensuite.
+  async function copyAsPng(app: any, elements: Record<string, any>[], appState: Record<string, any>): Promise<Blob> {
+    const action = app.actionManager.actions.copyAsPng;
+    if (typeof action?.perform !== "function") throw new Error("This version of Excalidraw cannot export PNG");
+    const clipboard = navigator.clipboard as any;
+    const captured: { png?: Blob } = {};
+    clipboard.write = async (items: ClipboardItem[]) => {
+      for (const item of items) {
+        if (item.types.includes("image/png")) captured.png ??= await item.getType("image/png");
+      }
+    };
+    try {
+      const result = await action.perform(elements, appState, null, app);
+      if (result?.appState?.errorMessage) throw new Error(result.appState.errorMessage);
+    } finally {
+      delete clipboard.write;
+    }
+    if (!captured.png) throw new Error("PNG export failed");
+    return captured.png;
+  }
+
+  // Aperçus des frames de la page affichée (onglet Slides), larges d'au plus
+  // maxWidth px, cadrés sur la frame. null : frame introuvable.
+  async function exportFramePngs(api: ExcalidrawAPI, frameIds: string[], maxWidth: number): Promise<(Blob | null)[]> {
+    const app = findApp();
+    if (!app) throw new Error("Excalidraw not found");
+    const state = api.getAppState();
+    const elements = cleanScene(allElements(api));
+    const pngs: (Blob | null)[] = [];
+    for (const frameId of frameIds) {
+      const frame = elements.find((el) => el.id === frameId && !el.isDeleted && isFrame(el));
+      if (!frame || !(frame.width > 0)) {
+        pngs.push(null);
+        continue;
+      }
+      pngs.push(
+        await copyAsPng(app, elements, {
+          ...state,
+          selectedElementIds: { [frameId]: true }, // une frame seule sélectionnée : export cadré sur elle
+          exportBackground: true,
+          exportWithDarkMode: state.theme === "dark",
+          exportEmbedScene: false,
+          exportScale: Math.min(1, maxWidth / frame.width),
+        }),
+      );
+    }
+    return pngs;
+  }
+
   // Frames de la page affichée, ou d'une autre page (scène enregistrée, passée
   // par le content script : rien ne change à l'écran). null : frame introuvable.
   async function exportFrameSvgs(
@@ -1402,6 +1453,13 @@ interface BridgeMessage {
         // Réponse à la fin de l'export (polices chargées et intégrées au SVG)
         const { frameIds, scene } = args[0] as { frameIds: string[]; scene?: SceneData };
         exportFrameSvgs(api, frameIds, scene).then(
+          (result) => window.postMessage({ source: "excalihub-bridge", id, result }),
+          (err: unknown) =>
+            window.postMessage({ source: "excalihub-bridge", id, error: err instanceof Error ? err.message : String(err) }),
+        );
+      } else if (method === "exportFramePngs") {
+        const { frameIds, maxWidth = 512 } = args[0] as { frameIds: string[]; maxWidth?: number };
+        exportFramePngs(api, frameIds, maxWidth).then(
           (result) => window.postMessage({ source: "excalihub-bridge", id, result }),
           (err: unknown) =>
             window.postMessage({ source: "excalihub-bridge", id, error: err instanceof Error ? err.message : String(err) }),

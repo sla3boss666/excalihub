@@ -1,6 +1,6 @@
 // Captures d'écran du canevas Excalidraw (transitions et aperçus des slides)
-import { callBridge, waitForRender } from "./bridgeClient";
-import { fitFrame, PresentationFrame, ScreenRect, SLIDE_FRAME_RENDERING } from "./frames";
+import { callBridgeWithTimeout } from "./bridgeClient";
+import { PresentationFrame, ScreenRect } from "./frames";
 
 export function getStaticCanvas(): HTMLCanvasElement | null {
   return (
@@ -83,49 +83,39 @@ export function scaleCanvas(source: HTMLCanvasElement, maxWidth: number): HTMLCa
   return out;
 }
 
-// Aperçus : on cadre brièvement chaque frame derrière un cache, on copie
-// le rendu, puis on rend la vue d'origine.
-export async function captureThumbnails(
+// Aperçus des slides de la page affichée, rendus par Excalidraw lui-même (son
+// export PNG, cadré sur la frame, thème compris) : rien ne bouge à l'écran et
+// le résultat ne dépend pas de ce que le canevas affiche à cet instant.
+export async function renderThumbnails(
   frames: PresentationFrame[],
-  maxWidth = 640,
+  maxWidth = 512,
 ): Promise<Map<string, HTMLCanvasElement>> {
   const thumbs = new Map<string, HTMLCanvasElement>();
   if (frames.length === 0) return thumbs;
 
-  const original = await callBridge<any>("getAppState");
+  // Premier export : Excalidraw charge ses polices
+  const blobs = await callBridgeWithTimeout<(Blob | null)[]>(
+    15_000 + frames.length * 2_000,
+    "exportFramePngs",
+    { frameIds: frames.map((f) => f.id), maxWidth },
+  );
 
-  const cover = document.createElement("div");
-  cover.className = "excalihub-capture-cover";
-  cover.textContent = "Creating previews…";
-  document.body.appendChild(cover);
-
-  try {
-    for (const frame of frames) {
-      const view = fitFrame(frame);
-      await callBridge("updateScene", {
-        appState: {
-          scrollX: view.scrollX,
-          scrollY: view.scrollY,
-          zoom: { value: view.zoom },
-          frameRendering: SLIDE_FRAME_RENDERING,
-        },
-      });
-      await waitForRender();
-      const shot = captureRect(view.rect);
-      if (shot) thumbs.set(frame.id, scaleCanvas(shot, maxWidth));
-    }
-  } finally {
-    await callBridge("updateScene", {
-      appState: {
-        scrollX: original.scrollX,
-        scrollY: original.scrollY,
-        zoom: original.zoom,
-        frameRendering: original.frameRendering,
-      },
-    }).catch(() => {});
-    await waitForRender(1);
-    cover.remove();
-  }
-
+  await Promise.all(
+    frames.map(async (frame, i) => {
+      const blob = blobs[i];
+      if (!blob) return;
+      try {
+        const bitmap = await createImageBitmap(blob);
+        const canvas = document.createElement("canvas");
+        canvas.width = bitmap.width;
+        canvas.height = bitmap.height;
+        canvas.getContext("2d")?.drawImage(bitmap, 0, 0);
+        bitmap.close();
+        thumbs.set(frame.id, canvas);
+      } catch {
+        // Image illisible : slide sans aperçu
+      }
+    }),
+  );
   return thumbs;
 }
