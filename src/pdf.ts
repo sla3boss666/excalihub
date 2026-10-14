@@ -21,7 +21,7 @@ const BLACK = new Set(["#000", "#000000", "black"]);
 // insécable y devient &nbsp;, inconnu en XML, et un caractère de contrôle (texte
 // collé) y est interdit. Une image SVG devant être du XML valide, ils
 // empêcheraient d'afficher la slide.
-function toXml(svg: string): string {
+export function toXml(svg: string): string {
   return svg.replace(/&nbsp;/g, "&#160;").replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "");
 }
 
